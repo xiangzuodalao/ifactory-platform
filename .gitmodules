@@ -1,0 +1,12 @@
+[submodule "components/cmms"]
+	path = components/cmms
+	url = https://github.com/xiangzuodalao/cmms.git
+[submodule "components/thingsboard"]
+	path = components/thingsboard
+	url = https://github.com/xiangzuodalao/thingsboard.git
+[submodule "components/digital-mcp"]
+	path = components/digital-mcp
+	url = https://github.com/xiangzuodalao/digital_mcp.git
+[submodule "components/pdm-algorithm"]
+	path = components/pdm-algorithm
+	url = https://github.com/xiangzuodalao/PDM_Algorithm.git

@@ -1,0 +1,11 @@
+interface:
+  display_name: "PdM 受控模型训练"
+  short_description: "通过本地 MCP 安全预检、确认并执行单次 PdM 模型训练"
+  default_prompt: "Use $pdm-train-model to safely preview and run one PdM model training job."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "digital-platform"
+      description: "Local digital platform MCP server for controlled PdM training and prediction"
+policy:
+  allow_implicit_invocation: true

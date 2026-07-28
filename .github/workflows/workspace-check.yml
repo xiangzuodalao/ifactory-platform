@@ -1,0 +1,47 @@
+name: workspace-check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workspace-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out platform and components
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      - name: Validate script modes
+        run: test -x scripts/bootstrap.sh -a -x scripts/doctor.sh -a -x scripts/run-digital-mcp.sh
+
+      - name: Configure component remotes
+        run: ./scripts/bootstrap.sh
+
+      - name: Validate workspace, Skills, and MCP configuration
+        run: ./scripts/doctor.sh
+
+      - name: Smoke-test the MCP STDIO entry point
+        run: ./scripts/run-digital-mcp.sh </dev/null
+
+      - name: Confirm checks did not mutate tracked state
+        shell: bash
+        run: |
+          git diff --check
+          test -z "$(git status --porcelain)"
+          git submodule foreach --recursive 'test -z "$(git status --porcelain)"'

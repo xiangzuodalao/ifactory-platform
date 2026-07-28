@@ -1,0 +1,47 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.local
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Runtime state and logs
+.cache/
+.runtime/
+.tmp/
+tmp/
+*.log
+*.pid
+
+# Python
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+*.py[cod]
+
+# JavaScript and Java build output
+**/node_modules/
+**/target/
+**/build/
+**/dist/
+**/coverage/
+
+# PdM data and model artifacts
+**/data/
+**/artifacts/
+**/checkpoints/
+*.ckpt
+*.onnx
+*.pt
+*.pth
+
+# Local migration backups
+_legacy/

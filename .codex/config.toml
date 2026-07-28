@@ -1,0 +1,11 @@
+[mcp_servers.digital-platform]
+command = "uv"
+args = ["run", "--project", "components/digital-mcp", "--frozen", "--no-dev", "pdm-mcp"]
+cwd = "."
+env_vars = ["PDM_API_BASE_URL", "PDM_ENABLE_TRAIN", "PDM_TRAIN_TIMEOUT_SECONDS"]
+startup_timeout_sec = 30
+tool_timeout_sec = 7300
+default_tools_approval_mode = "writes"
+
+[mcp_servers.digital-platform.tools.pdm_train_model]
+approval_mode = "prompt"
