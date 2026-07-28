@@ -33,7 +33,7 @@
 - Consumes: running container `pdm_algorithm-valeo-pdm-api-1` and health endpoint `http://127.0.0.1:10021/healthz`
 - Produces: before/after disk measurements with the running PDM image and container intact
 
-- [ ] **Step 1: Capture baseline container, disk, and runtime-state checksums**
+- [x] **Step 1: Capture baseline container, disk, and runtime-state checksums**
 
 Run:
 
@@ -52,7 +52,7 @@ find /home/vm/code/PDM_Algorithm/configs /home/vm/code/PDM_Algorithm/data /home/
 
 Expected: container reports `running` and `healthy`; health returns `{"status":"ok"}`.
 
-- [ ] **Step 2: Prune only unused build cache older than 24 hours**
+- [x] **Step 2: Prune only unused build cache older than 24 hours**
 
 Run:
 
@@ -63,7 +63,7 @@ docker builder prune --filter 'until=24h' --force | tee "$PDM_AUDIT_DIR/builder-
 
 Expected: command exits 0 and reports reclaimed build-cache bytes; it does not remove images, containers, networks, or volumes.
 
-- [ ] **Step 3: Verify the service and runtime state after pruning**
+- [x] **Step 3: Verify the service and runtime state after pruning**
 
 Run:
 
@@ -95,7 +95,7 @@ Expected: health remains `ok`, checksums match, and free disk space is not lower
 - Consumes: legacy MCP command prefix and the project `digital-platform` MCP configuration
 - Produces: zero legacy MCP processes, intact new MCP processes, and no legacy PDM virtual environments
 
-- [ ] **Step 1: Record exact old and new MCP process sets**
+- [x] **Step 1: Record exact old and new MCP process sets**
 
 Run:
 
@@ -113,7 +113,7 @@ ps -eo pid=,comm=,args= |
 
 Expected: old process list contains only `uv`/`pdm-mcp` commands under the legacy integration path; new list contains project `components/digital-mcp` commands.
 
-- [ ] **Step 2: Send SIGTERM only to exact legacy uv parent processes**
+- [x] **Step 2: Send SIGTERM only to exact legacy uv parent processes**
 
 Run:
 
@@ -151,7 +151,7 @@ fi
 
 Expected: only exact legacy-path processes receive signals.
 
-- [ ] **Step 3: Verify the old MCP is gone and the new PDM control path remains usable**
+- [x] **Step 3: Verify the old MCP is gone and the new PDM control path remains usable**
 
 Run:
 
@@ -180,7 +180,7 @@ codex exec --ephemeral --skip-git-repo-check -C /home/vm/code/ifactory-platform 
 
 Expected: no legacy process matches; at least one new MCP process remains; the tool result reports healthy.
 
-- [ ] **Step 4: Resolve and validate the two exact deletion targets**
+- [x] **Step 4: Resolve and validate the two exact deletion targets**
 
 Run:
 
@@ -195,7 +195,7 @@ test -d "$LEGACY_MCP_VENV"
 
 Expected: both paths resolve exactly to the approved legacy archive and are directories.
 
-- [ ] **Step 5: Delete only the approved legacy environments**
+- [x] **Step 5: Delete only the approved legacy environments**
 
 Run:
 
@@ -210,7 +210,7 @@ test ! -e "$LEGACY_MCP_VENV"
 
 Expected: both environments are absent; legacy source, Git data, configs, data, and artifacts remain.
 
-- [ ] **Step 6: Prune dangling uv cache entries and verify runtime state**
+- [x] **Step 6: Prune dangling uv cache entries and verify runtime state**
 
 Run:
 
@@ -242,7 +242,7 @@ Expected: uv reports pruned entries, checksums match, and PDM remains healthy.
 - Consumes: component commit `9593c485c1a1b8488af7753ac8352e225d4e445b`
 - Produces: named, isolated component branch for Tasks 4–7
 
-- [ ] **Step 1: Use `superpowers:using-git-worktrees` to create the worktree**
+- [x] **Step 1: Use `superpowers:using-git-worktrees` to create the worktree**
 
 Run the skill-prescribed repository detection, then:
 
@@ -257,7 +257,7 @@ git -C /home/vm/code/ifactory-platform/components/pdm-algorithm \
 
 Expected: the worktree is on `chore/pdm-cpu-image`, and the platform submodule remains detached at its original gitlink.
 
-- [ ] **Step 2: Confirm clean worktree and component instructions**
+- [x] **Step 2: Confirm clean worktree and component instructions**
 
 Run:
 
@@ -281,7 +281,7 @@ Expected: clean named branch with the same component rules already captured in t
 - Consumes: Python `tomllib` and the approved CPU dependency design
 - Produces: `runtime_dependency_names() -> set[str]`, CPU Torch uv source metadata, minimal runtime dependencies, and dev-only pytest/Ruff
 
-- [ ] **Step 1: Write the failing dependency contract test**
+- [x] **Step 1: Write the failing dependency contract test**
 
 Create `tests/test_distribution_contract.py` with:
 
@@ -349,7 +349,7 @@ def test_test_and_lint_tools_are_dev_dependencies() -> None:
     assert not {"pytest", "ruff"}.intersection(runtime)
 ```
 
-- [ ] **Step 2: Run the contract test and verify RED**
+- [x] **Step 2: Run the contract test and verify RED**
 
 Run:
 
@@ -360,7 +360,7 @@ uvx --from pytest==9.0.2 pytest tests/test_distribution_contract.py -v
 
 Expected: failures show forbidden runtime packages and missing `tool.uv.sources`/CPU index.
 
-- [ ] **Step 3: Replace the production dependency block with the minimal direct set**
+- [x] **Step 3: Replace the production dependency block with the minimal direct set**
 
 Set `[project].dependencies` to:
 
@@ -402,7 +402,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 ```
 
-- [ ] **Step 4: Regenerate the lock and verify it contains no GPU stack**
+- [x] **Step 4: Regenerate the lock and verify it contains no GPU stack**
 
 Run:
 
@@ -415,7 +415,7 @@ fi
 
 Expected: lock succeeds and the forbidden-package search returns no matches.
 
-- [ ] **Step 5: Run the contract test and verify GREEN**
+- [x] **Step 5: Run the contract test and verify GREEN**
 
 Run:
 
@@ -425,7 +425,7 @@ uvx --from pytest==9.0.2 pytest tests/test_distribution_contract.py -v
 
 Expected: all three tests pass.
 
-- [ ] **Step 6: Commit the dependency contract**
+- [x] **Step 6: Commit the dependency contract**
 
 Run:
 
@@ -449,7 +449,7 @@ git commit -m "build: lock PDM to CPU runtime dependencies"
 - Consumes: Task 4 CPU uv lock
 - Produces: single frozen production sync, no default GPU reservation, one-worker CPU image, and documented CPU deployment behavior
 
-- [ ] **Step 1: Add failing Docker/Compose contract tests**
+- [x] **Step 1: Add failing Docker/Compose contract tests**
 
 Append:
 
@@ -468,7 +468,7 @@ def test_default_compose_does_not_request_gpu() -> None:
     assert "capabilities: [ gpu ]" not in compose
 ```
 
-- [ ] **Step 2: Run the two new tests and verify RED**
+- [x] **Step 2: Run the two new tests and verify RED**
 
 Run:
 
@@ -481,7 +481,7 @@ uvx --from pytest==9.0.2 pytest \
 
 Expected: Dockerfile test fails on two sync commands/extra Torch install/two workers; Compose test fails on NVIDIA reservation.
 
-- [ ] **Step 3: Make Dockerfile use the CPU lock exactly once**
+- [x] **Step 3: Make Dockerfile use the CPU lock exactly once**
 
 Keep the existing Ubuntu/ODBC installation, but replace the dependency and application-copy section with:
 
@@ -504,7 +504,7 @@ Delete both original `uv sync` blocks and the standalone
 CMD ["uvicorn", "valeo_pdm.api.app:app", "--host", "0.0.0.0", "--port", "10021", "--workers", "1"]
 ```
 
-- [ ] **Step 4: Remove only the default NVIDIA reservation from Compose**
+- [x] **Step 4: Remove only the default NVIDIA reservation from Compose**
 
 Delete:
 
@@ -520,7 +520,7 @@ Delete:
 
 Keep ports, mounts, health check, ODBC configuration, `ipc: host`, and restart policy unchanged.
 
-- [ ] **Step 5: Document CPU default and future GPU boundary**
+- [x] **Step 5: Document CPU default and future GPU boundary**
 
 Update `README.md` and `docs/docker-deploy.md` to state:
 
@@ -533,7 +533,7 @@ exactly one CUDA/PyTorch index; do not add CUDA packages to the default lock.
 
 Use the surrounding document language (Chinese) while preserving these exact technical requirements.
 
-- [ ] **Step 6: Run contract tests and verify GREEN**
+- [x] **Step 6: Run contract tests and verify GREEN**
 
 Run:
 
@@ -543,7 +543,7 @@ uvx --from pytest==9.0.2 pytest tests/test_distribution_contract.py -v
 
 Expected: all five contract tests pass.
 
-- [ ] **Step 7: Commit the Docker contract**
+- [x] **Step 7: Commit the Docker contract**
 
 Run:
 
@@ -564,7 +564,7 @@ git commit -m "build: make PDM container CPU-only by default"
 - Consumes: Task 4 CPU environment and Task 5 image contract
 - Produces: a clean Python test/lint baseline before image construction
 
-- [ ] **Step 1: Synchronize the complete CPU development environment**
+- [x] **Step 1: Synchronize the complete CPU development environment**
 
 Run:
 
@@ -574,7 +574,7 @@ uv sync --frozen --all-groups
 
 Expected: CPU Torch installs without NVIDIA/CUDA/Triton packages.
 
-- [ ] **Step 2: Run the complete default test suite**
+- [x] **Step 2: Run the complete default test suite**
 
 Run:
 
@@ -584,7 +584,7 @@ uv run pytest -q
 
 Expected: all default tests pass and the `integration_db` test remains deselected.
 
-- [ ] **Step 3: Run full Ruff and capture actual blockers**
+- [x] **Step 3: Run full Ruff and capture actual blockers**
 
 Run:
 
@@ -595,11 +595,11 @@ uv run ruff format --check .
 
 Expected: if the previously observed E741/E712 issues remain, only those three unchanged-source findings fail.
 
-- [ ] **Step 4: Fix the exact Ruff findings without changing model behavior**
+- [x] **Step 4: Fix the exact Ruff findings without changing model behavior**
 
 In `informer.py`, rename the ambiguous local loop variable `l` to `layer` and replace boolean comparisons of the form `mask == True` with the equivalent boolean mask expression accepted by Ruff. Do not alter tensor shapes, attention math, model defaults, or public interfaces.
 
-- [ ] **Step 5: Re-run focused and full verification**
+- [x] **Step 5: Re-run focused and full verification**
 
 Run:
 
@@ -612,7 +612,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Commit only if the lint file changed**
+- [x] **Step 6: Commit only if the lint file changed**
 
 Run:
 
@@ -638,7 +638,7 @@ fi
 - Consumes: verified component worktree from Task 6
 - Produces: independently tested candidate image and measured size
 
-- [ ] **Step 1: Build the candidate image**
+- [x] **Step 1: Build the candidate image**
 
 Run:
 
@@ -649,7 +649,7 @@ docker build --progress=plain -t valeo-pdm:cpu-candidate .
 
 Expected: build exits 0 using the frozen CPU lock.
 
-- [ ] **Step 2: Verify dependency and size properties inside the image**
+- [x] **Step 2: Verify dependency and size properties inside the image**
 
 Run:
 
@@ -672,7 +672,7 @@ docker run --rm --entrypoint du valeo-pdm:cpu-candidate -sb /app/.venv | tee "$P
 
 Expected: imports succeed, CUDA is false, and image/venv measurements are materially below the baseline.
 
-- [ ] **Step 3: Start the candidate on isolated port 10022**
+- [x] **Step 3: Start the candidate on isolated port 10022**
 
 Run:
 
@@ -690,7 +690,7 @@ docker run -d --rm \
   valeo-pdm:cpu-candidate
 ```
 
-- [ ] **Step 4: Verify candidate health and models**
+- [x] **Step 4: Verify candidate health and models**
 
 Run:
 
@@ -716,7 +716,7 @@ docker inspect --format '{{.State.Health.Status}}' valeo-pdm-cpu-candidate
 
 Expected: health is `healthy`, health JSON is `ok`, and model response is non-empty.
 
-- [ ] **Step 5: Stop and remove candidate smoke resources**
+- [x] **Step 5: Stop and remove candidate smoke resources**
 
 Run:
 
@@ -747,7 +747,7 @@ Expected: the `--rm` candidate container disappears; only the image tag remains.
 - Consumes: candidate image from Task 7 and current legacy-path runtime mounts
 - Produces: running CPU image on port 10021 with an immediately available rollback path until final verification passes
 
-- [ ] **Step 1: Create rollback and latest tags**
+- [x] **Step 1: Create rollback and latest tags**
 
 Run:
 
@@ -761,7 +761,7 @@ docker tag valeo-pdm:cpu-candidate valeo-pdm:latest
 
 Expected: rollback tag resolves to the old image ID and latest resolves to the candidate image ID.
 
-- [ ] **Step 2: Recreate the current service without rebuilding**
+- [x] **Step 2: Recreate the current service without rebuilding**
 
 Run:
 
@@ -773,7 +773,7 @@ docker compose \
   up -d --no-build --force-recreate valeo-pdm-api
 ```
 
-- [ ] **Step 3: Verify the switched service**
+- [x] **Step 3: Verify the switched service**
 
 Run:
 
@@ -799,7 +799,7 @@ test -s "$PDM_AUDIT_DIR/live.models.json"
 
 Expected: container is running/healthy on the candidate image and model response is non-empty.
 
-- [ ] **Step 4: Verify MCP and immutable runtime state**
+- [x] **Step 4: Verify MCP and immutable runtime state**
 
 Run:
 
@@ -815,7 +815,7 @@ cmp "$PDM_AUDIT_DIR/runtime.sha256.before" "$PDM_AUDIT_DIR/runtime.sha256.after-
 
 Expected: MCP reports healthy and checksums match.
 
-- [ ] **Step 5: Roll back immediately if any Task 8 verification fails**
+- [x] **Step 5: Roll back immediately if any Task 8 verification fails**
 
 Run only on failure:
 
@@ -831,7 +831,7 @@ curl --fail --silent --show-error http://127.0.0.1:10021/healthz
 
 Expected: original image is restored and healthy; stop implementation and report the candidate failure.
 
-- [ ] **Step 6: Remove rollback/candidate tags only after all verification passes**
+- [x] **Step 6: Remove rollback/candidate tags only after all verification passes**
 
 Run:
 
@@ -861,7 +861,7 @@ Expected: `valeo-pdm:latest` remains in use, the old unreferenced image is remov
 - Consumes: final component commit on `chore/pdm-cpu-image`
 - Produces: platform branch `chore/pdm-space-optimization` pinned to the reviewed component commit
 
-- [ ] **Step 1: Run fresh final component verification**
+- [x] **Step 1: Run fresh final component verification**
 
 Run in the component worktree:
 
@@ -875,7 +875,7 @@ git status --short --branch
 
 Expected: tests/lint/format/diff checks pass and component worktree is clean.
 
-- [ ] **Step 2: Request an independent code review**
+- [x] **Step 2: Request an independent code review**
 
 Use `superpowers:requesting-code-review` with:
 
@@ -888,7 +888,7 @@ HEAD_SHA: output of git rev-parse HEAD in the component worktree
 
 Fix every Critical or Important issue, then repeat Task 9 Step 1.
 
-- [ ] **Step 3: Point the platform submodule at the component commit**
+- [x] **Step 3: Point the platform submodule at the component commit**
 
 Run:
 
@@ -899,7 +899,7 @@ git -C /home/vm/code/ifactory-platform add components/pdm-algorithm docs/superpo
 git -C /home/vm/code/ifactory-platform commit -m "build: pin slim CPU PDM service"
 ```
 
-- [ ] **Step 4: Run fresh platform verification**
+- [x] **Step 4: Run fresh platform verification**
 
 Run:
 
@@ -913,6 +913,6 @@ curl --fail --silent --show-error http://127.0.0.1:10021/healthz
 
 Expected: doctor reports 0 failures/0 warnings, branch is clean, and PDM is healthy.
 
-- [ ] **Step 5: Use `superpowers:finishing-a-development-branch`**
+- [x] **Step 5: Use `superpowers:finishing-a-development-branch`**
 
 Present the exact integration menu for the platform branch and preserve both the component worktree and branches unless the user selects an integration option.
