@@ -610,7 +610,34 @@ uv run ruff format --check .
 git diff --check
 ```
 
-Expected: all commands exit 0.
+The full-tree format command is an audit of the inherited source tree, not a
+zero-exit gate.  Extract every `Would reformat: <path>` line, sort the paths,
+and compare them with this exact accepted pre-existing baseline:
+
+```text
+src/valeo_pdm/__init__.py
+src/valeo_pdm/__main__.py
+src/valeo_pdm/api/__init__.py
+src/valeo_pdm/api/app.py
+src/valeo_pdm/api/router.py
+src/valeo_pdm/cli.py
+src/valeo_pdm/db/__init__.py
+src/valeo_pdm/gateway/gateway.py
+src/valeo_pdm/gateway/mock_backend.py
+src/valeo_pdm/training/__init__.py
+src/valeo_pdm/training/plan.py
+src/valeo_pdm/training/run_control.py
+src/valeo_pdm/transformer/models/__init__.py
+src/valeo_pdm/transformer/models/autoformer.py
+src/valeo_pdm/transformer/scripts/__init__.py
+src/valeo_pdm/transformer/train_testmodel.py
+tests/test_training_api_mvp.py
+```
+
+Expected: pytest, Ruff lint, and `git diff --check` exit 0.  The full-tree
+format audit exits 1 with exactly the 17 sorted paths above—no more and no
+fewer—and every Python file changed from the component base commit passes an
+individual `uv run ruff format --check <paths...>` invocation.
 
 - [x] **Step 6: Commit only if the lint file changed**
 
@@ -873,7 +900,13 @@ git diff --check
 git status --short --branch
 ```
 
-Expected: tests/lint/format/diff checks pass and component worktree is clean.
+Repeat the exact Task 6 Step 5 path-set comparison for the full-tree format
+audit and run the format checker separately over every Python file changed
+from the component base commit.
+
+Expected: tests, Ruff lint, changed-file format checks, and diff checks pass;
+the full-tree format audit matches the exact accepted 17-path baseline; and
+the component worktree is clean.
 
 - [x] **Step 2: Request an independent code review**
 
