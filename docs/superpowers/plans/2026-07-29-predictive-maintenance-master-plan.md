@@ -16,7 +16,7 @@
   remotes, then completely read the root `AGENTS.md`, that component's
   `AGENTS.md` when present, its correctly cased README, and only the
   task-relevant build/interface docs.
-- Component code is committed and pushed in the component repository before the superproject commits its gitlink, contracts, deployment, or platform tests.
+- Component code is committed and pushed in the component repository before the final coordinated superproject commit records its gitlink, contracts, deployment, or platform tests. The sole Phase 1 exception is the Task 2 local, unpushed contract checkpoint for SDD review; it is not publication and must remain local until provider and consumer branches pass and the coordinated gate completes.
 - The new component remote is `https://github.com/xiangzuodalao/platform-integration.git`. Before implementation, verify that this initialized repository exists; if it does not, stop and request authority to create it.
 - The new service implementation assumption is Python 3.12 with FastAPI/SQLAlchemy/Alembic. A JVM requirement must be decided before Phase 1 because it changes all `platform-integration` file paths, but not the approved external contracts.
 - The pilot contains exactly 20 simulated ThingsBoard devices, six device types, and one predictive measurement per device.
@@ -40,6 +40,8 @@
   exactly one external-reference GET before any POST; that pre-write GET has no
   nested client retry and failure is retried only by the next outbox attempt.
 - Every component commit is preceded by its focused tests and `./scripts/doctor.sh`; every phase gate also runs contract tests and the phase-specific end-to-end test.
+- Every planned RED command must successfully collect or compile its tests and fail only a named behavioural assertion. Import, collection, project-metadata, or Java compilation errors are invalid RED results; absent Python implementations use test-local delayed imports converted to explicit assertions, and absent Java types are exercised through compile-safe reflection or HTTP behaviour.
+- Root feature commits, including a permitted local SDD checkpoint, remain unpushed until their phase's final coordination gate and final coordination commit complete. Then push only the named root feature branch; never push `main`.
 
 ## Execution Prerequisites
 
@@ -147,7 +149,7 @@ Produces:
 - the fifth submodule and service skeleton;
 - PDM `POST /api/v2/predictions` with real `history` consumption;
 - CMMS `equipment_id` and idempotent asset creation/query;
-- provider/consumer contract tests committed with the first real contracts;
+- provider/consumer contract tests held in a local SDD-review checkpoint and finalized with the coordinated first real contracts;
 - no live cross-system write.
 
 Gate:
@@ -336,7 +338,10 @@ an unexpected upstream.
 
 - [ ] **Step 2: Run each component's focused red/green cycle**
 
-Use the exact commands in the phase plan. A component commit is forbidden if its focused suite or format check is failing.
+Use the exact commands in the phase plan. Each RED command must first collect or
+compile successfully and then fail a named behaviour assertion; repair test
+harness import, collection, metadata, and compilation errors before continuing.
+A component commit is forbidden if its focused suite or format check is failing.
 
 - [ ] **Step 3: Verify the superproject before component commits**
 
@@ -363,7 +368,8 @@ Expected: each touched component is clean and its pushed SHA is reachable from i
 
 - [ ] **Step 5: Commit the coordinated superproject slice**
 
-Use the exact root `git add` list and phase integration commit message in the final task of the phase. Always run:
+Use the exact root `git add` list and phase integration commit message in the final task of the phase. A Task 2-style local reviewer checkpoint is permitted only
+when the detailed plan says so; it is not pushed or published. Always run:
 
 ```bash
 set -Eeuo pipefail
@@ -373,6 +379,8 @@ git diff --cached --submodule=log
 ```
 
 Expected: no dirty submodule is recorded, contract/provider/consumer changes are in the same delivery slice, and the superproject can reproduce every component SHA.
+Only after these checks and the final coordination commit succeed, push the named
+root feature branch. Never push `main`.
 
 ## Final Acceptance
 

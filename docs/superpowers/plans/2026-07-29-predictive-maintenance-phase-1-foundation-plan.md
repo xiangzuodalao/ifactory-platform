@@ -14,7 +14,8 @@
 - Begin implementation with `superpowers:using-git-worktrees`. This planning commit already ignores `.worktrees/`; create `.worktrees/predictive-maintenance-integration` from `feat/predictive-maintenance-integration-design` with branch `feat/predictive-maintenance-integration`, then run `git submodule update --init` there before Task 1. If the execution environment has already supplied an isolated worktree on that exact branch, validate it instead of creating a second one.
 - Do not train a model or run `components/pdm-algorithm/tests/test_cpu_train_predict_smoke.py`.
 - Do not call a live ThingsBoard, CMMS, PDM, or production database in Phase 1.
-- Keep contracts uncommitted until provider and consumer branches have passed their tests and been pushed.
+- Every RED command must collect or compile its test suite successfully and then fail on a named behavioural assertion. An import, test-collection, project-metadata, or Java compilation failure is not a valid RED result. Python tests for an absent implementation must delay the import inside the test, catch `ModuleNotFoundError`, and fail an explicit assertion that names the unavailable behaviour; Java tests must use compile-safe reflection or HTTP behaviour rather than directly referencing an absent type.
+- Task 2 may create one local, unpushed contract checkpoint commit solely for SDD reviewer inspection. Neither that checkpoint nor its contracts may be published or pushed while Tasks 3–5 provider/consumer work is incomplete. The root feature branch is pushed only after Task 6's coordinated gate and final coordination commit; never push `main`.
 - Existing `/measPredict/predict` and ordinary CMMS asset creation remain backward compatible.
 - Phase 1 does not create CMMS assets, write ThingsBoard attributes, create Alarms, or expose Dashboard Actions.
 - Every command block starts at the implementation worktree's superproject root unless the block contains its own `cd`; no block inherits another block's working directory.
@@ -39,6 +40,8 @@
 - Create: `components/platform-integration/src/platform_integration/cli.py`
 - Create: `components/platform-integration/tests/test_app.py`
 - Create: `components/platform-integration/tests/test_cli.py`
+- Create: `components/platform-integration/tests/test_container_hygiene.py`
+- Create: `tests/test_workspace_governance.py`
 - Modify: `.gitmodules`
 - Modify: `AGENTS.md`
 - Modify: `README.md`
@@ -53,6 +56,7 @@
 
 - Produces: `platform_integration.app.create_app(settings: Settings | None = None) -> FastAPI`
 - Produces: `GET /healthz -> {"status": "ok"}`
+- Produces: `platform_integration.cli.build_parser() -> argparse.ArgumentParser`
 - Produces: `platform-integration serve --host 0.0.0.0 --port 8080` console entry point
 - Produces: a fifth initialized submodule at `components/platform-integration`
 - Consumes: no business API
@@ -96,33 +100,53 @@ initialized recorded submodules, and the audit prints the one full
 clone. If any check fails, stop; do not create another root branch, reset a
 component, or create business code directly in the superproject.
 
-- [ ] **Step 2: Write the failing service health test**
+- [ ] **Step 2: Write the failing service, CLI, container, and ignore-safety tests**
 
-Add:
+Create the three component test files before writing package, application, CLI, Dockerfile, or
+ignore implementation. The RED runner uses temporary `--with` dependencies, so it
+can collect tests before this new component has project metadata. Do not import an
+absent `platform_integration` module at collection time. Each test must use a
+test-local helper equivalent to:
 
 ```python
-from fastapi.testclient import TestClient
-
-from platform_integration.app import create_app
+import importlib
 
 
-def test_healthz_is_process_only() -> None:
-    with TestClient(create_app()) as client:
-        response = client.get("/healthz")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+def require_module(name: str, behaviour: str):
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError:
+        assert False, f"{behaviour} is unavailable: {name} has not been implemented"
 ```
+
+`test_app.py` uses `require_module("platform_integration.app", "GET /healthz")`,
+then calls `create_app()` with `TestClient` and asserts `200` plus exactly
+`{"status": "ok"}`. `test_cli.py` delays its import of
+`platform_integration.cli`, calls its parser, and asserts the default `8080`, an
+explicit port override, and that `--help` contains no credential value.
+
+`test_container_hygiene.py` creates temporary sentinel `.env` and cache files
+inside the component, runs a real local `docker build` and `docker run` against
+the component build context, and asserts that the sentinels are absent from the
+image while `src/`, `pyproject.toml`, and `uv.lock` are present. It also asserts
+the image runs as UID:GID `10001:10001` and has the exact `serve --host 0.0.0.0
+--port 8080` command. Before the Dockerfile or ignore files exist, this test must
+explicitly assert that Docker build-context exclusion is unavailable, rather than
+letting a file read or Docker invocation fail incidentally. Clean sentinels in
+`finally`.
 
 Run:
 
 ```bash
 set -Eeuo pipefail
-uv run --directory components/platform-integration pytest \
-  tests/test_app.py tests/test_cli.py -v
+cd components/platform-integration
+uv run --with fastapi==0.125.0 --with pytest==9.0.2 pytest \
+  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
 ```
 
-Expected: FAIL because the package and project metadata do not yet exist.
+Expected: every test is collected; FAIL assertions name the unavailable
+`GET /healthz`, CLI, or Docker build-context/ignore behaviour. No import,
+collection, metadata, or Docker invocation error is an acceptable RED result.
 
 - [ ] **Step 3: Add the focused package and locked dependencies**
 
@@ -210,7 +234,7 @@ non-root UID:GID `10001:10001` and has:
 CMD ["platform-integration", "serve", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
-`test_cli.py` asserts the parser default is port `8080`, an explicit port overrides it, and no credential is printed in help or startup logging.
+`test_cli.py` asserts the parser default is port `8080`, an explicit port overrides it, and no credential is printed in help or startup logging. `test_container_hygiene.py` is the executable Docker build-context and ignore-safety proof described in Step 2; do not replace it with a static ignore-file string check.
 
 Run:
 
@@ -219,23 +243,32 @@ set -Eeuo pipefail
 cd components/platform-integration
 uv lock
 uv sync --frozen
-uv run pytest tests/test_app.py tests/test_cli.py -v
+uv run pytest \
+  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-Expected: one test passes; lock and format checks pass.
+Expected: every service, CLI, Docker image, build-context, and ignore-safety test
+passes; lock and format checks pass.
 
-- [ ] **Step 4: Demonstrate the four-component governance failure**
+- [ ] **Step 4: Write and verify the governance RED as a behaviour test**
 
-Run from the superproject after the submodule is present:
+Create the root-level `tests/test_workspace_governance.py`; it must run `./scripts/doctor.sh` from the
+superproject root in a subprocess and assert that it succeeds and reports five
+declared components. Until governance changes, the test is collected and fails
+its own explicit assertion that workspace governance does not yet accept the
+fifth component; it must not treat a shell, import, or collection error as RED.
+
+Run:
 
 ```bash
 set -Eeuo pipefail
-./scripts/doctor.sh
+uv run --with pytest==9.0.2 pytest tests/test_workspace_governance.py -v
 ```
 
-Expected: FAIL because current governance declares exactly four components.
+Expected: the test is collected and fails only its named fifth-component
+governance assertion.
 
 - [ ] **Step 5: Update governance to five declared components**
 
@@ -247,7 +280,11 @@ Add this CI step:
 - name: Test platform-integration skeleton
   run: >
     uv run --directory components/platform-integration --frozen
-    pytest tests/test_app.py -v
+    pytest tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
+- name: Test root workspace governance
+  run: >
+    uv run --with pytest==9.0.2
+    pytest tests/test_workspace_governance.py -v
 ```
 
 Run:
@@ -255,9 +292,11 @@ Run:
 ```bash
 set -Eeuo pipefail
 ./scripts/doctor.sh
+uv run --with pytest==9.0.2 pytest tests/test_workspace_governance.py -v
 ```
 
-Expected: zero failures; dirty-worktree warnings are expected until commits are made.
+Expected: governance and all four component-boundary tests pass; doctor has zero
+failures, while dirty-worktree warnings are expected until commits are made.
 
 - [ ] **Step 6: Commit and push the component before the superproject**
 
@@ -266,6 +305,8 @@ Run:
 ```bash
 set -Eeuo pipefail
 ./scripts/doctor.sh
+uv run --directory components/platform-integration --frozen pytest \
+  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
 git -C components/platform-integration add \
   .gitignore .dockerignore \
   AGENTS.md README.md pyproject.toml uv.lock Dockerfile src tests
@@ -275,13 +316,17 @@ git -C components/platform-integration push -u origin \
   feat/predictive-maintenance-pilot
 
 git add .gitmodules AGENTS.md README.md docs scripts \
-  .github/workflows/workspace-check.yml components/platform-integration
+  .github/workflows/workspace-check.yml components/platform-integration \
+  tests/test_workspace_governance.py
 git diff --cached --check
 ./scripts/doctor.sh
 git commit -m "chore: register platform integration component"
 ```
 
-Expected: the component SHA is remotely reachable before the superproject records it; doctor then reports a clean fifth submodule.
+Expected: the component SHA is remotely reachable before the superproject records
+it; doctor then reports a clean fifth submodule. The root registration commit stays
+local and unpushed until the Task 6 coordination gate; do not push the root feature
+branch or `main` here.
 
 ### Task 2: Freeze Phase 1 Contracts and Examples Without Publishing Them
 
@@ -318,7 +363,8 @@ Use a `tests/pyproject.toml` with Python `>=3.12` and these locked dev dependenc
 "pyyaml==6.0.3"
 ```
 
-The first test must load both paths and call `validate_spec()`:
+The first test must assert each document path exists before loading it and then
+call `validate_spec()`:
 
 ```python
 from pathlib import Path
@@ -335,7 +381,9 @@ def test_phase1_openapi_documents_are_valid() -> None:
         "contracts/openapi/pdm-prediction-v2.yaml",
         "contracts/openapi/cmms-integration-v1.yaml",
     ):
-        document = yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
+        path = ROOT / relative
+        assert path.is_file(), f"Phase 1 OpenAPI behaviour is unavailable: {relative}"
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
         validate_spec(document)
 ```
 
@@ -347,7 +395,8 @@ uv lock --project tests
 uv run --directory tests pytest contract/phase1/test_contract_documents.py -v
 ```
 
-Expected: FAIL because the OpenAPI documents do not yet exist.
+Expected: the test is collected and FAILs its named unavailable-OpenAPI assertion;
+it must not fail as an unhandled file-read, import, or collection error.
 
 - [ ] **Step 2: Write the PDM v2 contract and fixed examples**
 
@@ -480,7 +529,29 @@ set -Eeuo pipefail
 uv run --directory tests --frozen pytest contract/phase1 -v
 ```
 
-Expected: contract syntax and examples pass. Do not commit yet; Tasks 3–5 must implement both sides first.
+Expected: contract syntax and examples pass.
+
+- [ ] **Step 4: Create the local SDD-review contract checkpoint without publishing**
+
+After the focused contract suite passes, create exactly one local checkpoint for
+reviewers. It is intentionally not a publication event and must remain an
+ancestor of the later Task 6 coordination commit.
+
+```bash
+set -Eeuo pipefail
+git add \
+  contracts/openapi/pdm-prediction-v2.yaml \
+  contracts/openapi/cmms-integration-v1.yaml \
+  contracts/json-schema/equipment-mapping-v1.json \
+  tests/pyproject.toml tests/uv.lock tests/contract/phase1
+git diff --cached --check
+git commit -m "chore: checkpoint phase 1 contracts for review"
+```
+
+Expected: one local-only checkpoint exists for SDD review. Do not run `git push`,
+do not publish the contracts, and do not push the root feature branch or `main`.
+Tasks 3–5 must still pass provider and consumer tests before Task 6 admits this
+checkpoint to the coordinated delivery gate.
 
 ### Task 3: Implement Deterministic PDM Prediction v2
 
@@ -533,6 +604,13 @@ Expected: the branch contains the CPU/safety work recorded by the superproject. 
 
 - [ ] **Step 2: Write normalization tests and verify RED**
 
+Keep every absent v2 import inside a test-local helper. For example, catch
+`ModuleNotFoundError` from `importlib.import_module("valeo_pdm.prediction_v2.normalization")`
+and then execute `assert False, "v2 canonical-decimal normalization is unavailable"`.
+Only after that helper returns may the test call `canonical_decimal`. This keeps
+the test collectable and makes the missing behaviour, rather than the import
+mechanism, the RED result.
+
 Tests must assert fixed literals for:
 
 ```python
@@ -551,7 +629,9 @@ cd components/pdm-algorithm
 uv run pytest tests/test_prediction_v2_normalization.py -v
 ```
 
-Expected: FAIL because `valeo_pdm.prediction_v2` does not exist.
+Expected: the test is collected and FAILs the named
+`v2 canonical-decimal normalization is unavailable` assertion. An import or
+collection error is invalid and must be repaired before moving to GREEN.
 
 - [ ] **Step 3: Implement strict models and normalization**
 
@@ -640,6 +720,11 @@ Expected: all normalization tests pass and `uv.lock` changes with the direct dep
 
 - [ ] **Step 4: Write catalog and repeat-last service tests**
 
+Use the same test-local delayed-import pattern for the absent catalog,
+predictor, and service symbols. On absence, explicitly fail an assertion naming
+the missing catalog-resolution or repeat-last-forecast behaviour; never import
+those not-yet-created modules at the top of the test file.
+
 Tests must use a temporary real manifest/artifact and assert:
 
 - exact tenant/profile/model/meas match;
@@ -658,7 +743,9 @@ uv run --directory components/pdm-algorithm --frozen pytest \
   tests/test_prediction_v2_service.py -v
 ```
 
-Expected: FAIL because catalog, predictor, and service are absent.
+Expected: both files are collected and FAIL only their named unavailable
+catalog-resolution or repeat-last-forecast assertions; import and collection
+errors are invalid RED results.
 
 - [ ] **Step 5: Implement catalog, predictor, and service boundaries**
 
@@ -688,6 +775,12 @@ Run the two tests again; expected PASS.
 
 - [ ] **Step 6: Write API provider tests and verify RED**
 
+Use the existing, compilable application factory and HTTP client only; do not
+import or reference the absent v2 router or service class directly. The tests
+must make a real in-process HTTP request and assert the desired endpoint
+behaviour, so the current `404` is a response assertion failure rather than a
+compile/import failure.
+
 Test:
 
 - valid root contract-shaped request returns `200`;
@@ -706,7 +799,9 @@ uv run --directory components/pdm-algorithm --frozen pytest \
   tests/test_prediction_v2_api.py tests/test_api_startup.py -v
 ```
 
-Expected: `/api/v2/predictions` returns 404.
+Expected: every test is collected and the valid-request test FAILs its explicit
+`assert response.status_code == 200` because the endpoint currently returns
+`404`; all other RED failures must likewise be HTTP behaviour assertions.
 
 - [ ] **Step 7: Add the router and sanitize legacy errors**
 
@@ -810,6 +905,14 @@ git -C components/cmms switch -c \
   3d9b0765f26d83c0f1eb511717563b59084f8bd8
 ```
 
+Keep these Java tests compile-safe before production types exist: exercise the
+existing controller through `MockMvc`/HTTP using literal `equipment_id` JSON and
+`Idempotency-Key` headers, and use reflection only where a service seam must be
+probed. Do not import or instantiate the planned `IntegrationIdempotency*`,
+`AssetIntegrationService`, new repository method, DTO accessor, or migration
+class from a RED test. The test source and Maven test compilation must complete
+against the pre-change CMMS tree.
+
 Tests must assert:
 
 - existing asset POST without integration fields remains valid;
@@ -829,7 +932,11 @@ cd components/cmms/api
 mvn -Dtest='AssetControllerTest,AssetIntegrationTest,AssetIntegrationServiceTest,IntegrationIdempotencyServiceTest' test
 ```
 
-Expected: FAIL because fields, endpoint, migration, and service do not exist.
+Expected: Maven compiles and runs every selected test; the tests FAIL only their
+named HTTP behaviour assertions (for example, an `equipment_id` POST is not yet
+rejected with `400 IDEMPOTENCY_KEY_REQUIRED`, or the lookup endpoint is not yet
+available). A missing-symbol or test-compilation error is invalid RED and must be
+fixed in the test before implementation begins.
 
 - [ ] **Step 2: Add the Liquibase schema**
 
@@ -935,6 +1042,12 @@ git -C components/cmms push -u origin feat/predictive-maintenance-integration
 
 - [ ] **Step 1: Write typed client tests with `httpx.MockTransport`**
 
+Keep the absent contract-model and client imports inside test-local helpers.
+Catch `ModuleNotFoundError` and use an explicit assertion that names the missing
+typed PDM-request or CMMS-idempotent-client behaviour. Once available, exercise
+real `httpx.MockTransport` request/response behaviour; do not make a top-level
+import failure stand in for RED.
+
 PDM tests assert exact snake_case JSON, request digest preservation, `Authorization: Bearer` from the configured credential reference, timeout mapping to `PDM_UNAVAILABLE`, rejection of response digest/model identity mismatch, and absence of the token from exceptions/logs.
 
 CMMS tests assert GET-before-POST, exact `Idempotency-Key`, same-body replay, `409` conflict mapping, and that a POST timeout causes the caller-visible `CMMS_WRITE_RESULT_UNKNOWN` error instead of an automatic second POST.
@@ -947,7 +1060,9 @@ cd components/platform-integration
 uv run pytest tests/contracts tests/clients -v
 ```
 
-Expected: FAIL because contract models and clients are absent.
+Expected: every test is collected and FAILs only its named unavailable typed-client
+behaviour assertion. Import, collection, or project-metadata errors are invalid
+RED results and must be corrected in the test harness first.
 
 - [ ] **Step 2: Implement exact models and canonical request building**
 
@@ -1026,7 +1141,8 @@ git -C components/platform-integration push
 **Interfaces:**
 
 - Consumes: pushed provider and consumer SHAs from Tasks 3–5
-- Produces: one reproducible superproject commit containing contracts, examples, tests, and gitlinks
+- Consumes: the local-only Task 2 contract checkpoint
+- Produces: one final reproducible coordination commit completing a local Phase 1 history containing contracts, examples, tests, and gitlinks
 
 - [ ] **Step 1: Add contract tests to CI**
 
@@ -1046,6 +1162,10 @@ pdm-prediction-v2: provider=PDM, consumer=platform-integration, additive v2
 cmms-integration-v1: provider=CMMS, consumer=platform-integration, additive fields/endpoints
 ```
 
+Before entering the gate, identify the local Task 2 checkpoint and verify it has
+not been published. It remains local until every provider and consumer command
+in Step 2 passes.
+
 - [ ] **Step 2: Run fresh provider, consumer, and platform verification**
 
 Run:
@@ -1063,20 +1183,23 @@ mvn -f components/cmms/api/pom.xml \
   -Dtest='AssetControllerTest,IntegrationIdempotencyServiceTest,AssetIntegrationTest' test
 
 uv run --directory components/platform-integration --frozen pytest \
-  tests/test_app.py tests/contracts tests/clients -v
+  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py \
+  tests/contracts tests/clients -v
 
-uv run --directory tests --frozen pytest contract/phase1 -v
+uv run --directory tests --frozen pytest \
+  test_workspace_governance.py contract/phase1 -v
 ./scripts/doctor.sh
 ```
 
 Expected: every command exits zero. No command invokes training or a live service.
 
-- [ ] **Step 3: Verify exact staged scope and commit Phase 1**
+- [ ] **Step 3: Verify exact staged scope, commit, then push only the gated root feature branch**
 
 Run:
 
 ```bash
 set -Eeuo pipefail
+test "$(git branch --show-current)" = feat/predictive-maintenance-integration
 git add \
   components/pdm-algorithm \
   components/cmms \
@@ -1094,6 +1217,10 @@ git diff --cached --check
 git diff --cached --submodule=log
 ./scripts/doctor.sh
 git commit -m "feat: add predictive maintenance contract foundation"
+git push -u origin feat/predictive-maintenance-integration
 ```
 
-Expected: three clean gitlinks point to pushed commits; Phase 1 contains no deployment that can perform a live write.
+Expected: three clean gitlinks point to pushed commits; the local contract
+checkpoint and final coordination commit are pushed together only after the gate
+passes. Never push `main`. Phase 1 contains no deployment that can perform a live
+write.
