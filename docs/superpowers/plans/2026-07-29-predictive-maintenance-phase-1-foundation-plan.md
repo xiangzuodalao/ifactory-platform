@@ -40,6 +40,7 @@
 - Create: `components/platform-integration/src/platform_integration/cli.py`
 - Create: `components/platform-integration/tests/test_app.py`
 - Create: `components/platform-integration/tests/test_cli.py`
+- Create: `components/platform-integration/tests/test_config.py`
 - Create: `components/platform-integration/tests/test_container_hygiene.py`
 - Create: `tests/test_workspace_governance.py`
 - Modify: `.gitmodules`
@@ -100,13 +101,13 @@ initialized recorded submodules, and the audit prints the one full
 clone. If any check fails, stop; do not create another root branch, reset a
 component, or create business code directly in the superproject.
 
-- [ ] **Step 2: Write the failing service, CLI, container, and ignore-safety tests**
+- [ ] **Step 2: Write the failing service, CLI, configuration, container, and ignore-safety tests**
 
-Create the three component test files before writing package, application, CLI, Dockerfile, or
+Create the four component test files before writing package, application, CLI, configuration, Dockerfile, or
 ignore implementation. The RED runner uses temporary `--with` dependencies, so it
 can collect tests before this new component has project metadata. Do not import an
 absent `platform_integration` module at collection time. Each test must use a
-test-local helper equivalent to:
+test-local helper equivalent to this target-aware helper:
 
 ```python
 import importlib
@@ -115,9 +116,20 @@ import importlib
 def require_module(name: str, behaviour: str):
     try:
         return importlib.import_module(name)
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as exc:
+        target_or_parent = {
+            ".".join(name.split(".")[:index])
+            for index in range(1, len(name.split(".")) + 1)
+        }
+        if exc.name not in target_or_parent:
+            raise
         assert False, f"{behaviour} is unavailable: {name} has not been implemented"
 ```
+
+It converts only a missing target module or one of its missing parent packages
+into the named behavioural RED. A `ModuleNotFoundError` raised by a dependency
+inside an existing target module (for example `pydantic_settings`) is re-raised
+and must be repaired rather than misreported as an unavailable behaviour.
 
 `test_app.py` uses `require_module("platform_integration.app", "GET /healthz")`,
 then calls `create_app()` with `TestClient` and asserts `200` plus exactly
@@ -125,27 +137,39 @@ then calls `create_app()` with `TestClient` and asserts `200` plus exactly
 `platform_integration.cli`, calls its parser, and asserts the default `8080`, an
 explicit port override, and that `--help` contains no credential value.
 
+`test_config.py` delays the import of `platform_integration.config`, then uses
+real process-environment changes and `Settings()` construction to assert that
+`PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF` is read as the observable
+`pdm_credential_ref` value, an unknown constructor field is rejected, and an
+environment with no external credential reference produces `None` rather than a
+built-in credential or secret. These are model behaviours, not source-text
+assertions.
+
 `test_container_hygiene.py` creates temporary sentinel `.env` and cache files
-inside the component, runs a real local `docker build` and `docker run` against
-the component build context, and asserts that the sentinels are absent from the
-image while `src/`, `pyproject.toml`, and `uv.lock` are present. It also asserts
-the image runs as UID:GID `10001:10001` and has the exact `serve --host 0.0.0.0
---port 8080` command. Before the Dockerfile or ignore files exist, this test must
-explicitly assert that Docker build-context exclusion is unavailable, rather than
-letting a file read or Docker invocation fail incidentally. Clean sentinels in
-`finally`.
+inside the component. It verifies the component `.gitignore` with
+`git check-ignore --no-index` against those sentinels (the command must report
+each sentinel as ignored), then runs a real local `docker build` and `docker run`
+against the component build context. It asserts that the sentinels are absent
+from the image while `src/`, `pyproject.toml`, and `uv.lock` are present. It also
+asserts the image runs as UID:GID `10001:10001` and has the exact `serve --host
+0.0.0.0 --port 8080` command. Before the Dockerfile or ignore files exist, this
+test must explicitly assert that the corresponding ignore or Docker
+build-context exclusion behaviour is unavailable, rather than letting a file
+read, a static content check, or a Docker invocation fail incidentally. Clean
+sentinels in `finally`.
 
 Run:
 
 ```bash
 set -Eeuo pipefail
 cd components/platform-integration
-uv run --with fastapi==0.125.0 --with pytest==9.0.2 pytest \
-  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
+uv run --with fastapi==0.125.0 --with httpx==0.28.1 --with pytest==9.0.2 pytest \
+  tests/test_app.py tests/test_cli.py tests/test_config.py \
+  tests/test_container_hygiene.py -v
 ```
 
 Expected: every test is collected; FAIL assertions name the unavailable
-`GET /healthz`, CLI, or Docker build-context/ignore behaviour. No import,
+`GET /healthz`, CLI, configuration, or Docker build-context/ignore behaviour. No import,
 collection, metadata, or Docker invocation error is an acceptable RED result.
 
 - [ ] **Step 3: Add the focused package and locked dependencies**
@@ -215,16 +239,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 app = create_app()
 ```
 
-`Settings` must use `env_prefix="PLATFORM_INTEGRATION_"`, reject unknown fields, and contain no default credentials.
+`Settings` must use `env_prefix="PLATFORM_INTEGRATION_"`, reject unknown fields,
+and contain no default credentials. It exposes an optional
+`pdm_credential_ref` whose only value comes from
+`PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF`; when that external reference is
+absent, its value is `None` and no secret or default credential is synthesized.
 
 The component-level `.gitignore` excludes `.venv/`, Python caches, pytest/Ruff
 caches, coverage, local `.env*`, runtime plans/receipts, logs, and build
 artifacts without hiding tracked examples. The `.dockerignore` excludes the
 same material plus `.git/`, tests' runtime output, credentials, and model/data
 artifacts while retaining source, migrations, lockfile, and metadata required
-for a reproducible build. Tests create sentinel files and inspect both ignore
-rules and the Docker build context so local secrets/caches cannot enter the
-independent submodule or image.
+for a reproducible build. Tests prove the `.gitignore` with `git check-ignore
+--no-index` sentinel behaviour and prove `.dockerignore` through real Docker
+build, image, and container behaviour; they do not grep ignore-file text.
 
 Implement `serve` as the only runtime role in this phase. It passes the
 explicit CLI host/port to Uvicorn; the Docker image creates and runs as fixed
@@ -244,7 +272,8 @@ cd components/platform-integration
 uv lock
 uv sync --frozen
 uv run pytest \
-  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
+  tests/test_app.py tests/test_cli.py tests/test_config.py \
+  tests/test_container_hygiene.py -v
 uv run ruff check .
 uv run ruff format --check .
 ```
@@ -280,7 +309,8 @@ Add this CI step:
 - name: Test platform-integration skeleton
   run: >
     uv run --directory components/platform-integration --frozen
-    pytest tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
+    pytest tests/test_app.py tests/test_cli.py tests/test_config.py
+    tests/test_container_hygiene.py -v
 - name: Test root workspace governance
   run: >
     uv run --with pytest==9.0.2
@@ -295,7 +325,7 @@ set -Eeuo pipefail
 uv run --with pytest==9.0.2 pytest tests/test_workspace_governance.py -v
 ```
 
-Expected: governance and all four component-boundary tests pass; doctor has zero
+Expected: governance and all five component-boundary tests pass; doctor has zero
 failures, while dirty-worktree warnings are expected until commits are made.
 
 - [ ] **Step 6: Commit and push the component before the superproject**
@@ -306,7 +336,8 @@ Run:
 set -Eeuo pipefail
 ./scripts/doctor.sh
 uv run --directory components/platform-integration --frozen pytest \
-  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py -v
+  tests/test_app.py tests/test_cli.py tests/test_config.py \
+  tests/test_container_hygiene.py -v
 git -C components/platform-integration add \
   .gitignore .dockerignore \
   AGENTS.md README.md pyproject.toml uv.lock Dockerfile src tests
@@ -604,12 +635,34 @@ Expected: the branch contains the CPU/safety work recorded by the superproject. 
 
 - [ ] **Step 2: Write normalization tests and verify RED**
 
-Keep every absent v2 import inside a test-local helper. For example, catch
-`ModuleNotFoundError` from `importlib.import_module("valeo_pdm.prediction_v2.normalization")`
-and then execute `assert False, "v2 canonical-decimal normalization is unavailable"`.
-Only after that helper returns may the test call `canonical_decimal`. This keeps
-the test collectable and makes the missing behaviour, rather than the import
-mechanism, the RED result.
+Keep every absent v2 import inside a test-local helper. Use this target-aware
+helper (and the same helper for the catalog, predictor, and service imports in
+Step 4):
+
+```python
+import importlib
+
+
+def require_module(name: str, behaviour: str):
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        target_or_parent = {
+            ".".join(name.split(".")[:index])
+            for index in range(1, len(name.split(".")) + 1)
+        }
+        if exc.name not in target_or_parent:
+            raise
+        assert False, f"{behaviour} is unavailable: {name} has not been implemented"
+```
+
+For example, call
+`require_module("valeo_pdm.prediction_v2.normalization", "v2 canonical-decimal normalization")`
+and only after it returns call `canonical_decimal`. The helper converts a missing
+target module or parent package into the named behavioural RED, but re-raises a
+`ModuleNotFoundError` from a dependency imported inside the target module. This
+keeps the test collectable and makes the missing behaviour, rather than the
+import mechanism, the RED result.
 
 Tests must assert fixed literals for:
 
@@ -788,8 +841,15 @@ Test:
 - malformed decimal and digest mismatch return stable `422`/`409` codes;
 - unknown exact model returns `404 MODEL_NOT_FOUND`;
 - service exceptions never expose an absolute path;
+- a legacy `/measPredict/predict` failure injected with both an absolute path
+  and sensitive exception text returns its stable legacy error code and exposes
+  neither the path nor the original exception text in the HTTP response;
 - monkeypatched DB/CSV readers fail the test if called;
 - legacy `/measPredict/predict` remains present.
+
+The legacy test uses an in-process seam to inject the failure only; it starts no
+training and uses no real external dependency. It must assert response behaviour
+from the existing legacy HTTP route, not an implementation detail.
 
 Run:
 
@@ -808,6 +868,10 @@ Expected: every test is collected and the valid-request test FAILs its explicit
 Create a separate `APIRouter(prefix="/api/v2")`, include it in `app.py`, and inject `PredictionV2Service` through a dependency that tests can override. Authenticate `Authorization: Bearer` with a constant-time comparison against the non-empty `VALEO_PDM_PREDICTION_V2_BEARER_TOKEN` before resolving tenant/profile; do not log or return the token. Keep `/healthz` process-only. When no runtime catalog is configured, v2 returns `503 PREDICTION_CATALOG_NOT_READY`.
 
 Replace legacy responses containing checkpoint paths or `str(exc)` with stable safe codes while retaining status behavior.
+Implement the exact sanitized legacy HTTP behaviour exercised by the Step 6
+injected-failure test: preserve the stable code/status mapping but do not return
+the exception text or path. Keep the test seam local to tests or dependency
+injection; it must not initiate training or an external call.
 
 Run:
 
@@ -912,6 +976,15 @@ probed. Do not import or instantiate the planned `IntegrationIdempotency*`,
 `AssetIntegrationService`, new repository method, DTO accessor, or migration
 class from a RED test. The test source and Maven test compilation must complete
 against the pre-change CMMS tree.
+
+When reflection is necessary, its helper may convert to a named unavailable-service
+behaviour assertion only when `Class.forName(targetClassName)` throws a
+`ClassNotFoundException` whose missing class name is exactly `targetClassName`.
+It must rethrow a `ClassNotFoundException` for any other class, and must not catch
+or convert `LinkageError`, initializer failures, access errors, or invocation
+errors. After the seam exists, the test may use reflection or HTTP to call the
+real seam and assert its observable service behaviour; a Java compile or
+reflection error can never stand in for RED.
 
 Tests must assert:
 
@@ -1042,11 +1115,31 @@ git -C components/cmms push -u origin feat/predictive-maintenance-integration
 
 - [ ] **Step 1: Write typed client tests with `httpx.MockTransport`**
 
-Keep the absent contract-model and client imports inside test-local helpers.
-Catch `ModuleNotFoundError` and use an explicit assertion that names the missing
-typed PDM-request or CMMS-idempotent-client behaviour. Once available, exercise
-real `httpx.MockTransport` request/response behaviour; do not make a top-level
-import failure stand in for RED.
+Keep the absent contract-model and client imports inside test-local helpers. Use
+this target-aware helper for each import:
+
+```python
+import importlib
+
+
+def require_module(name: str, behaviour: str):
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        target_or_parent = {
+            ".".join(name.split(".")[:index])
+            for index in range(1, len(name.split(".")) + 1)
+        }
+        if exc.name not in target_or_parent:
+            raise
+        assert False, f"{behaviour} is unavailable: {name} has not been implemented"
+```
+
+It turns only a missing target module or its parent package into an explicit
+typed PDM-request or CMMS-idempotent-client behavioural assertion. A missing
+transitive dependency inside an existing target module is re-raised. Once the
+target is available, exercise real `httpx.MockTransport` request/response
+behaviour; do not make a top-level import failure stand in for RED.
 
 PDM tests assert exact snake_case JSON, request digest preservation, `Authorization: Bearer` from the configured credential reference, timeout mapping to `PDM_UNAVAILABLE`, rejection of response digest/model identity mismatch, and absence of the token from exceptions/logs.
 
@@ -1177,13 +1270,16 @@ uv run --directory components/pdm-algorithm --frozen pytest \
   tests/test_prediction_v2_normalization.py \
   tests/test_prediction_v2_catalog.py \
   tests/test_prediction_v2_service.py \
-  tests/test_prediction_v2_api.py -v
+  tests/test_prediction_v2_api.py \
+  tests/test_api_startup.py \
+  tests/test_distribution_contract.py -v
 
 mvn -f components/cmms/api/pom.xml \
-  -Dtest='AssetControllerTest,IntegrationIdempotencyServiceTest,AssetIntegrationTest' test
+  -Dtest='AssetControllerTest,AssetIntegrationServiceTest,IntegrationIdempotencyServiceTest,AssetIntegrationTest' test
 
 uv run --directory components/platform-integration --frozen pytest \
-  tests/test_app.py tests/test_cli.py tests/test_container_hygiene.py \
+  tests/test_app.py tests/test_cli.py tests/test_config.py \
+  tests/test_container_hygiene.py \
   tests/contracts tests/clients -v
 
 uv run --directory tests --frozen pytest \
@@ -1200,6 +1296,24 @@ Run:
 ```bash
 set -Eeuo pipefail
 test "$(git branch --show-current)" = feat/predictive-maintenance-integration
+git fetch --quiet --prune origin
+checkpoint_candidates="$(
+  git log HEAD --format=%H --fixed-strings \
+    --grep='chore: checkpoint phase 1 contracts for review'
+)"
+test "$(printf '%s\n' "$checkpoint_candidates" | sed '/^$/d' | wc -l)" -eq 1
+checkpoint_sha="$checkpoint_candidates"
+printf '%s' "$checkpoint_sha" | rg -q '^[0-9a-f]{40}$'
+git merge-base --is-ancestor "$checkpoint_sha" HEAD
+published_checkpoint_refs="$(
+  git for-each-ref --format='%(refname)' refs/remotes/ |
+    while IFS= read -r remote_ref; do
+      if git merge-base --is-ancestor "$checkpoint_sha" "$remote_ref"; then
+        printf '%s\n' "$remote_ref"
+      fi
+    done
+)"
+test -z "$published_checkpoint_refs"
 git add \
   components/pdm-algorithm \
   components/cmms \
@@ -1222,5 +1336,7 @@ git push -u origin feat/predictive-maintenance-integration
 
 Expected: three clean gitlinks point to pushed commits; the local contract
 checkpoint and final coordination commit are pushed together only after the gate
-passes. Never push `main`. Phase 1 contains no deployment that can perform a live
-write.
+passes. The quiet fetch and all-remote-ref proof work whether the remote feature
+branch does not yet exist or already exists, and reveal neither checkpoint SHA
+nor remote-ref details. Never push `main`. Phase 1 contains no deployment that
+can perform a live write.

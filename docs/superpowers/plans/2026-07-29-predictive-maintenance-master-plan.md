@@ -42,6 +42,11 @@
 - Every component commit is preceded by its focused tests and `./scripts/doctor.sh`; every phase gate also runs contract tests and the phase-specific end-to-end test.
 - Every planned RED command must successfully collect or compile its tests and fail only a named behavioural assertion. Import, collection, project-metadata, or Java compilation errors are invalid RED results; absent Python implementations use test-local delayed imports converted to explicit assertions, and absent Java types are exercised through compile-safe reflection or HTTP behaviour.
 - Root feature commits, including a permitted local SDD checkpoint, remain unpushed until their phase's final coordination gate and final coordination commit complete. Then push only the named root feature branch; never push `main`.
+- For the Phase 1 local SDD checkpoint, the final gate fetches the root remote,
+  uniquely resolves the checkpoint, proves it is an ancestor of `HEAD`, and
+  proves no `refs/remotes/*` ref contains it before the final coordination push.
+  This proof must work whether the feature branch has not yet been created on
+  the remote or already exists, without printing checkpoint or remote-ref data.
 
 ## Execution Prerequisites
 
