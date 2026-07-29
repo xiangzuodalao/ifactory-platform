@@ -3,7 +3,8 @@
 ## 文档状态
 
 - 日期：2026-07-29
-- 状态：设计已在对话中逐节确认，等待书面设计复核
+- 状态：设计已批准，等待按分阶段实施计划执行
+- 实施入口：[预测维护主实施计划](../plans/2026-07-29-predictive-maintenance-master-plan.md)
 - 首期环境：ThingsBoard 汽车工厂本地模拟环境
 - 首期规模：20 台模拟设备、六种设备类型、每台设备一个主要预测测点
 
@@ -103,7 +104,7 @@ ThingsBoard、PDM、集成服务和 CMMS 通过 Kafka 或 RabbitMQ 交换事件�
 flowchart LR
     D[20 台模拟设备] -->|MQTT 遥测| TB[ThingsBoard]
     TB -->|历史遥测 REST| I[platform-integration]
-    I -->|PredictionRequestV2 + HistoryData| PDM[PDM API]
+    I -->|PredictionRequestV2 + history[]| PDM[PDM API]
     PDM -->|预测序列 + 模型版本| I
     I -->|创建或更新 PDM Alarm| TB
     U[维护人员] -->|创建 CMMS 工单| TB
@@ -226,6 +227,7 @@ flowchart LR
    - `meas_code`
    - `model_profile_id`
    - `model_info_id`
+   - `request_window_points`
    - `policy_version`
    - `enabled`
    - 唯一约束：`(tenant_id, equipment_id, meas_code)` 和 `(tenant_id, equipment_id, telemetry_key)`
@@ -247,9 +249,9 @@ ThingsBoard 使用 `SERVER_SCOPE` 属性保存 `equipment_id` 和 `cmms_asset_id
 
 ## 首期模型配置
 
-首期按六种设备类型共享六个 `model_profile_id`，每台设备仍有独立 `equipment_id`。每个 `model_profile_id` 映射到 PDM 现有的 `EquipmentCode + MeasCode` 场景身份，避免把被预测设备 ID 继续当作模型注册键。集成测试和隔离演示环境生成六个具有固定 `model_info_id` 和版本的确定性 `testmodel` fixture，目标是验证平台闭环而不是声明模型精度；这些 fixture 不调用训练 API、不经过训练 Skill，也不提交 checkpoint。
+首期按六种设备类型共享六个 `model_profile_id`，每台设备仍有独立 `equipment_id`。每个 `model_profile_id` 映射到 PDM 现有的 `EquipmentCode + MeasCode` 场景身份，避免把被预测设备 ID 继续当作模型注册键。集成测试和隔离演示环境生成六个具有固定 `model_info_id` 和版本的确定性 repeat-last fixture，目标是验证平台闭环而不是声明模型精度；这些 fixture 不调用训练 API、不经过训练 Skill，也不提交 checkpoint。
 
-隔离环境启动流程在临时 volume 中确定性生成 fixture 及 manifest，将其只读挂载到 PDM，并通过受版本控制的测试 manifest 注册六个 profile、模型版本、预处理版本和预期 `model_artifact_sha256`。Fixture 预测器把最后一个有效规范化值重复到整个 horizon，以便持续模拟故障可稳定触发阈值；这只是闭环测试替身，不代表模型精度。PDM readiness 必须逐项核验 manifest 与实际摘要后才允许影子调度。该路径由显式 `isolated_fixture_mode` 开关和隔离租户 allowlist 双重限制；非隔离部署检测到该开关或 `testmodel` manifest 时拒绝启动。环境 reset 时删除临时 volume，运行时不得静默生成或替换模型产物。
+隔离环境启动流程在专用未跟踪运行目录中确定性生成 fixture 及 runtime manifest，将其只读挂载到 PDM，并通过受版本控制的源 manifest 注册六个 profile、模型版本、预处理版本和预期 `model_artifact_sha256`。Fixture 预测器把最后一个有效规范化值重复到整个 horizon，以便持续模拟故障可稳定触发阈值；这只是闭环测试替身，不代表模型精度。PDM readiness 必须逐项核验 manifest 与实际摘要后才允许影子调度。该路径由显式 `isolated_fixture_mode` 开关、manifest 的 `fixture_mode: isolated-pilot` 标记和隔离租户 UUID allowlist 三重限制；非隔离部署检测到 isolated manifest 时拒绝启动。环境 reset 只针对核验后的精确运行目录并优先移动到可恢复回收目录，运行时不得静默生成或替换模型产物。
 
 | 设备类型 | 遥测键/测点 | 风险方向 | 模拟故障 | 首期阈值 |
 |---|---|---|---|---:|
@@ -262,7 +264,7 @@ ThingsBoard 使用 `SERVER_SCOPE` 属性保存 `equipment_id` 和 `cmms_asset_id
 
 这些测点与当前模拟器的故障覆盖字段一致。此前候选的 `mold_temperature`、`joint_current` 和 `measured_value` 不会被对应内置故障修改，因此不用于首期端到端故障验收。
 
-用真实 Informer/Autoformer 替换测试 fixture 不属于首期端到端验收。后续若执行该替换，每个新场景分别使用 `$pdm-onboard-scenario` 接入，并分别使用 `$pdm-train-model` 完成健康检查、精确匹配、预检、下一轮明确确认、一次训练和预测验证；禁止把六个模型合并成批量训练请求。当前 PDM 训练 API/Skill 不训练 `testmodel`。
+用真实 Informer/Autoformer 替换 repeat-last fixture 不属于首期端到端验收。后续若执行该替换，每个新场景分别使用 `$pdm-onboard-scenario` 接入，并分别使用 `$pdm-train-model` 完成健康检查、精确匹配、预检、下一轮明确确认、一次训练和预测验证；禁止把六个模型合并成批量训练请求。当前 PDM 训练 API/Skill 不训练隔离 repeat-last fixture。
 
 ## 契约设计
 
@@ -282,11 +284,11 @@ contracts/
     └── maintenance-alert-v1.json
 ```
 
-所有契约声明提供方、消费者、版本、认证、超时、错误、幂等和兼容策略。
+所有契约声明提供方、消费者、版本、认证、超时、错误、幂等和兼容策略。PDM v2 使用标准 `Authorization: Bearer <opaque-service-token>` 服务认证：PDM 只从 `VALEO_PDM_PREDICTION_V2_BEARER_TOKEN` 取得非空 token，集成服务只保存 `PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF` 并在调用时解析 secret。PDM 在租户/模型解析前以常量时间比较 token；隔离租户 allowlist 是认证后的第二道授权边界，不能替代认证。
 
 ### PDM `PredictionRequestV2`
 
-新增 `POST /api/v2/predictions`，保留现有 `/predict` 兼容入口。
+新增 `POST /api/v2/predictions`，保留现有 `/measPredict/predict` 兼容入口。
 
 请求包含：
 
@@ -298,16 +300,22 @@ contracts/
 - `meas_code`
 - `unit`
 - `sampling_frequency`
+- `window_start`，包含边界，严格 UTC Unix epoch milliseconds 整数
+- `window_end`，排除边界，严格 UTC Unix epoch milliseconds 整数
 - `request_digest`
 - `history[]`
   - `data_id`
-  - `timestamp`
+  - `timestamp`，严格 UTC Unix epoch milliseconds 整数
   - `value`，规范十进制字符串
   - `unit`
 
+`tenant_id`、`correlation_id` 和 `equipment_id` 在 JSON 中统一编码为小写、带连字符的规范 UUID 字符串；拒绝数字、大小写混用、紧凑、花括号包裹及其他宽松替代形式。
+
 `model_profile_id` 决定模型配置，`equipment_id` 只标识被预测设备，两者不得混用。PDM 必须实际消费 `history`，不得在该接口中读取 ThingsBoard、CMMS 或集成数据库。
 
-模型配置声明 `context_points`、`horizon_points`、`sampling_frequency`、单位和 `value_scale`。集成服务用 ThingsBoard 聚合查询按模型频率获取足够上下文；PDM 使用与训练一致的清洗和重采样逻辑再次验证输入。
+模型配置声明 `request_window_points`、`context_points`、`horizon_points`、`sampling_frequency`、单位和 `value_scale`。首期 `request_window_points=66`、`context_points=60`。集成服务用 ThingsBoard 聚合查询按模型频率获取足够上下文；PDM 使用与训练一致的清洗和重采样逻辑再次验证输入。
+
+首期每个请求窗口固定覆盖调度时间之前的 66 个一分钟 bucket，即 `[scheduled_at - 66 minutes, scheduled_at)`。`history` 只携带 ThingsBoard 实际返回的有限数值记录，不用字符串伪造缺失值；PDM 根据 `window_start`、`window_end` 和采样频率补齐包括首尾在内的预期 bucket。这样在 66 个预期 bucket 中允许最多 6 个缺失，同时仍能满足至少 60 个有限值。
 
 首期数据质量门槛固定为：
 
@@ -322,10 +330,10 @@ contracts/
 1. 时间戳转换为 UTC Unix epoch milliseconds；输入值拒绝 `NaN`、正负无穷和指数写法；
 2. 单位先做 Unicode NFC 和首尾空白清理，再与模型单位精确比较；
 3. 值用任意精度十进制解析，按模型 `value_scale` 进行 `ROUND_HALF_EVEN` 量化，再编码为固定小数位字符串；禁止前导 `+`，负零规范为正零；
-4. ThingsBoard 历史点没有稳定源 ID 时，集成服务把 `tenant_id`、`tb_device_id`、`telemetry_key`、UTC 时间戳、规范化值和单位组成 RFC 8785 对象并计算 SHA-256，作为确定性 `data_id`；
-5. 原始记录按 `(timestamp, data_id)` 稳定排序。`request_digest` 的摘要投影只包含租户、设备、模型、测点、单位、采样频率和规范化后的原始 `history`，明确排除 `correlation_id` 与 `request_digest` 自身；投影使用 RFC 8785 JSON Canonicalization Scheme 编码并计算 SHA-256；
+4. ThingsBoard 历史点没有稳定源 ID 时，集成服务用键名恰为 `tenant_id`、`tb_device_id`、`telemetry_key`、`timestamp`、`value`、`unit` 的对象计算 RFC 8785 SHA-256，作为确定性 `data_id`；它不包含 `equipment_id`、关联 ID、数组位置或读取时间；
+5. 原始记录按 `(timestamp, data_id)` 稳定排序。`request_digest` 投影的顶层键名恰为 `tenant_id`、`equipment_id`、`model_profile_id`、`model_info_id`、`meas_code`、`unit`、`sampling_frequency`、`window_start`、`window_end`、`history`；每个 `history` 对象的键名恰为 `data_id`、`timestamp`、`value`、`unit`。它明确排除 `correlation_id` 与 `request_digest` 自身；投影使用 RFC 8785 JSON Canonicalization Scheme 编码并计算 SHA-256；
 6. PDM 重算并校验 `request_digest` 后，对同一 timestamp 的值以任意精度十进制求和、除以记录数，再按 `value_scale` 做一次 `ROUND_HALF_EVEN`；随后按带版本的模型预处理规则清洗和重采样；
-7. 每个预期 bucket 都进入规范化输入数组，缺失值显式编码为 `null`。该数组连同 `model_profile_id`、`model_info_id`、`meas_code` 和预处理版本使用 RFC 8785 编码并计算 SHA-256，得到 `input_digest`。
+7. `[window_start, window_end)` 中每个预期 bucket 都进入规范化输入数组，缺失值显式编码为 `null`。该数组连同 `model_profile_id`、`model_info_id`、`meas_code` 和预处理版本使用 RFC 8785 编码并计算 SHA-256，得到 `input_digest`。
 
 集成服务计算并发送 `request_digest`；PDM 返回重算后的 `request_digest` 和清洗/重采样后的 `input_digest`。二者不一致时请求失败，不进入风险判定。
 
@@ -361,6 +369,8 @@ Idempotency-Key: alert-action:{alert_id}:{action}
 - `action`: `CREATE_WORK_ORDER`、`REJECT` 或 `CLOSE_RISK`
 - `reason`: `REJECT` 或 `CLOSE_RISK` 时必填
 - `expected_version`
+
+`expected_version` 必须等于 Alarm details 和 Action 响应中的公开字段 `maintenance_alert_version`；后者对应集成数据库 `maintenance_alert.version`，是 Dashboard 并发动作唯一使用的乐观锁版本。
 
 请求通过网关转发当前 ThingsBoard Bearer Token。集成服务使用该 Token 调用 ThingsBoard `GET /api/auth/user`，从返回的用户和租户身份完成委托验证；Token 只在请求内存中使用，不保存。首期维护权限由集成数据库中的 `maintenance_approver` 用户 allowlist 控制。随后再验证租户映射、Alert 状态和乐观锁版本。
 
@@ -407,14 +417,21 @@ GET /api/work-orders/by-external-ref?source=PDM_FORECAST&ref={alert_id}
 
 ### CMMS 状态事件
 
-CMMS 在工单状态事务内持久化 webhook outbox 记录，生成稳定 UUID `event_id`，并递增该工单的 `event_version`。重投使用相同事件 ID、版本和 payload，不在每次 HTTP 派发时重新生成 ID。
+CMMS 在工单状态事务内持久化 webhook outbox 记录，生成稳定 UUID
+`event_id`，并递增该工单的 `event_version`。同一事务先按 endpoint
+过滤条件判断投递资格，再为每条 delivery 冻结规范 callback URL、签名版本、
+endpoint-specific 精确 body 字节和 body SHA-256。重试或重放使用相同事件
+ID、版本、目标和 body，不在 HTTP 派发时从已变更的 endpoint 重建。
+派发时只读取该 endpoint 当前 secret，并要求 endpoint 仍启用且当前规范 URL
+和签名版本仍与冻结值一致；secret 轮换不会改变历史 delivery，
+URL/版本漂移或软删除则在不发 HTTP 的前提下进入永久 dead letter。
 
 `WORK_ORDER_STATUS_CHANGE` payload 至少包含：
 
 - 稳定 `event_id`
 - `event_version`
 - `occurred_at`
-- `tenant_id`
+- `cmms_company_id`
 - `correlation_id`
 - `work_order_id`
 - `external_source`
@@ -423,7 +440,23 @@ CMMS 在工单状态事务内持久化 webhook outbox 记录，生成稳定 UUID
 - `new_status`
 - `updated_at`
 
-Webhook 继续使用 HMAC-SHA256、时间戳和事件类型头。消费者先验签、校验时间窗口，再把事件写入 inbox；同一 `event_id` 只处理一次。非终态工单每 5 分钟由集成服务主动查询 CMMS，对账机制保证 webhook 丢失后仍最终一致。
+CMMS 不能可信地产生平台 `tenant_id`。集成服务必须用事件中的 `cmms_company_id` 查询唯一且启用的 `tenant_binding`，派生平台租户；未映射、重复映射或停用映射都拒绝处理。
+
+既有 webhook 的 v1 endpoint 继续取得原有 camelCase/`changedWorkOrder`
+语义和 body-only HMAC；新的平台集成 endpoint 显式选择
+`X-Webhook-Signature-Version: v2` 并取得固定 snake_case envelope。v2
+签名为
+`HMAC-SHA256(secret, utf8(timestamp + "." + exact_request_body))`
+的小写十六进制，另带稳定 `X-Webhook-Id`、
+`X-Webhook-Event-Version`、事件类型和 epoch-millisecond 时间戳头。
+消费者先校验 64 KiB body 上限、header/body 事件身份一致性、签名版本、
+五分钟时间窗口和常量时间签名，再把事件写入 inbox；同一 `event_id`
+只有 exact-body SHA-256 相同才作为幂等重复，不同已签 body 属于安全冲突，
+不得覆盖或静默 ACK。非终态工单每 5 分钟由集成服务主动查询 CMMS，
+对账机制保证 webhook 丢失后仍最终一致。`inbox-worker` 只在处理
+`COMPLETE` 时使用与对账 worker 相同的 CMMS 最小权限运行时凭据回查
+公司范围内的工单，取得完成时间和分类 ID；它不得获得 SETTINGS 管理凭据
+或 webhook 验签 secret。
 
 Webhook callback 必须经过平台网关。CMMS 只允许配置中精确声明的集成 callback base URL 绕过默认 private/loopback 拒绝，默认 allowlist 为空，不开放任意私网 URL。启动预检同时检查 API/Webhook entitlement：API key 不可用时使用专用最小权限 Bearer 服务用户；Webhook entitlement 不可用时，轮询对账成为唯一状态同步路径并在 readiness 中明确暴露降级状态。
 
@@ -460,20 +493,26 @@ ThingsBoard Alarm 的 outbox 聚合不使用会随 episode 变化的 `alert_id`�
 Alarm details 包含：
 
 - `alert_id`
+- `risk_key`：对 `tenant_id`、`equipment_id` 和 `meas_code` 的 RFC 8785 投影计算 SHA-256；数据库唯一性仍使用原始三元组
 - `equipment_id`
 - `meas_code`
 - `prediction_run_id`
 - `model_profile_id`
 - `model_info_id`
 - `policy_version`
-- 预测摘要和阈值
+- `forecast_summary`：固定小数位字符串 `min`、`max`、`mean` 和整数 `threshold_crossing_count`
+- `threshold`：`direction`、固定小数位字符串 `value` 和 `unit`
+- `risk_state`
 - `maintenance_state`
-- `cmms_work_order_id` 和链接（创建后）
+- `maintenance_alert_version`
+- `cmms_work_order_id` 和 `cmms_work_order_url`（创建后）
+- `cmms_status`、`cmms_event_version` 和 `cmms_status_updated_at`（收到反馈后）
 - `correlation_id`
+- `policy_evaluation_pending`
 
 ### 人工审批和工单
 
-维护人员在 ThingsBoard Alarm 面板中执行明确动作。普通 ACK 只表示已查看，不触发 CMMS 写入。
+维护人员在 ThingsBoard Alarm 面板中执行明确动作。普通 ACK 只表示已查看，不触发 CMMS 写入；Dashboard 保留 ACK、禁用原生 Clear，人工关闭风险只能执行需要原因和权限校验的 `CLOSE_RISK`。
 
 ```text
 ACTIVE risk_state
@@ -503,10 +542,10 @@ PENDING_APPROVAL
 
 1. 校验当前风险/维护状态、动作权限和 `expected_version`；
 2. 写入不可变 `alert_action` 和审批审计记录；
-3. 原子更新 `maintenance_alert`；
-4. 按动作写入必要的 `CMMS_WORK_ORDER_CREATE` 或 ThingsBoard Alarm clear outbox 事件。
+3. 原子更新 `maintenance_alert` 和当前 Alarm projection，并增加公开 Alert 版本和 Alarm aggregate version；
+4. 为新的用户可见状态写入 ThingsBoard Alarm `SUPERSEDABLE_STATE` outbox；按动作再写入必要的不可变 CMMS 命令。
 
-只有 `CREATE_WORK_ORDER` 写入 `CMMS_WORK_ORDER_CREATE`；`REJECT` 仅更新维护状态，`CLOSE_RISK` 则另写 ThingsBoard Alarm clear outbox。Work-order worker 调用 CMMS；成功后保存 CMMS 工单 ID 和链接，再更新 ThingsBoard Alarm details。CMMS 完成事件保存为维修反馈并同步到 ThingsBoard，但不自动训练模型。
+三种动作都会写入最新 Alarm 期望状态：`CREATE_WORK_ORDER` 和 `REJECT` 写 upsert，`CLOSE_RISK` 写 clear。只有 `CREATE_WORK_ORDER` 额外写入 `CMMS_WORK_ORDER_CREATE` 的 `IMMUTABLE_COMMAND`；`REJECT` 不写 CMMS 命令，`CLOSE_RISK` 也不能取消既有命令。Work-order worker 调用 CMMS；成功后保存 CMMS 工单 ID 和链接，再更新 ThingsBoard Alarm details。CMMS 完成事件保存为维修反馈并同步到 ThingsBoard，但不自动训练模型。
 
 ## 数据模型
 
@@ -546,7 +585,8 @@ Worker 在领取运行时获得 10 分钟 lease，并每 30 秒刷新 heartbeat�
 
 - `tenant_id` 和 ThingsBoard `user_id` 唯一约束；
 - `enabled`、授予人、授予时间和审计原因；
-- 首期由 provisioning 明确写入，不提供通用商业化权限管理界面。
+- 首期使用独立的 approver plan/下一轮哈希确认/apply 写入，不与资产
+  provisioning 授权合并，也不提供通用商业化权限管理界面。
 
 ### `alert_action`
 
@@ -563,13 +603,13 @@ Worker 在领取运行时获得 10 分钟 lease，并每 30 秒刷新 heartbeat�
 - `delivery_semantics`：可收敛期望状态的 `SUPERSEDABLE_STATE`，或不可撤销命令的 `IMMUTABLE_COMMAND`；
 - 事件类型和规范化 payload；
 - `PENDING`、`DELIVERING`、`DELIVERED`、`SUPERSEDED` 或 `DEAD_LETTER`；
-- 尝试次数、下次尝试时间和脱敏错误码。
+- `replay_generation`、本轮尝试次数、生命周期累计尝试次数、下次尝试时间和脱敏错误码。
 
 ### `inbox_event`
 
-- 来源系统和稳定事件 ID 唯一约束；
+- 来源系统和稳定事件 ID 唯一约束，并保存 exact-body SHA-256；
 - 接收时间、处理状态和状态版本；
-- 用于 webhook 去重和乱序拒绝。
+- 用于 webhook 去重、同 ID 异体冲突和乱序拒绝。
 
 ### `audit_event`
 
@@ -611,20 +651,31 @@ ThingsBoard Alarm upsert/clear/update 与 CMMS 工单创建都通过 outbox 投�
 
 CMMS 反馈、预测结果和人工动作都先在事务中更新同一风险键的当前 ThingsBoard 投影视图并增加版本，再写 outbox；它们不直接把旧事件 payload 转发给 ThingsBoard。Worker 发送前从投影视图重建最新 Alarm details，因此旧工单状态也不能覆盖新 episode 的当前展示。
 
-读取和 PDM 预测默认最多尝试 3 次，使用 1 秒起步、30 秒封顶的指数退避和抖动，并且不能跨过当前调度时间槽。外部写入默认最多尝试 8 次，退避上限为 1 小时；每次 CMMS 写重试前都先查询外部关联。超过限制进入 `DEAD_LETTER`，不得静默丢弃，也不得无限重试。人工重放必须记录操作者、原因和新的 correlation ID。
+读取和 PDM 预测默认最多尝试 3 次，使用 1 秒起步、30 秒封顶的指数退避和抖动，并且不能跨过当前调度时间槽。外部写入每个 replay generation 最多尝试 8 次，退避上限为 1 小时；每次 CMMS 写 attempt 前都先查询一次外部关联，该写前对账不叠加 HTTP client 内层重试，失败只由 outbox 的下一次 attempt 重试，避免乘法重试和重复 POST。超过限制进入 `DEAD_LETTER`，不得静默丢弃，也不得无限重试。人工重放必须记录操作者、原因、新的 correlation ID 和 generation，重置本轮预算但保留生命周期累计次数；CMMS 命令重放对账到既有工单时，在同一事务中把 `WORK_ORDER_CREATE_FAILED` 收敛到 `WORK_ORDER_OPEN`。确认外部工单不存在时，重放事务只把状态恢复为 `APPROVED`，随后 worker 首次 claim 再转换为 `WORK_ORDER_CREATING`，两次转换都增加 Alert/Alarm 投影版本。
 
 ## 安全
 
 - ThingsBoard、PDM 和 CMMS 各使用独立最小权限服务账号。
 - API Key 可轮换、有过期时间，不复用租户管理员用户名和密码。
+- CMMS webhook endpoint 的查看、创建、更新、删除和 secret 轮换均要求
+  本公司 `SETTINGS` 权限；普通 `ROLE_CLIENT` 无权操作。
 - CMMS API/Webhook entitlement 和 callback allowlist 在启动预检中验证，能力缺失不得静默忽略。
 - 入口统一通过 TLS 网关，执行认证、租户授权、维护权限检查和限流。
 - 服务间不信任用户提交的 `tenant_id`；租户从已验证身份派生并与请求目标交叉校验。
 - 所有数据库查询和唯一约束都包含租户边界。
 - 密钥、Token 和连接串只由环境或密钥管理系统注入。
+- v2 webhook 验签 secret 只挂载到接收 HTTP 请求的集成 API；inbox、
+  对账、预测和投递 worker 不得获得该文件或解析其引用。
 - 日志不记录 Token、原始时序、连接配置、上游原始异常或模型产物路径。
 - Webhook 校验签名和允许的时间漂移，防止伪造和重放。
-- provisioning、工单创建、人工关闭和 dead-letter 重放均属于显式写操作，必须可审计。
+- 资产 provisioning、Dashboard 发布、遥测/风险准备、approver 授予、
+  工单 Action、CMMS 状态变更、callback endpoint 创建或 secret 轮换以及
+  dead-letter 重放都是彼此独立的显式写操作；每类操作都必须保留幂等键、
+  correlation ID、精确目标和审计证据，一个确认不得授权另一类写入。
+- 隔离 E2E 的每个写入阶段都先生成绑定精确目标和 body 的短期计划，由
+  用户在后续轮次原样确认 SHA-256 后单次 apply；普通 pytest 只做纯本地
+  helper 测试或 receipt-bound 的非变更验证，不提供绕过确认的写开关；
+  Phase 3/4 最终业务验收的上游 HTTP 进一步限制为 GET/HEAD。
 
 ## 可观测性
 
@@ -681,7 +732,7 @@ prediction_run
 
 提供方和消费者共同验证：
 
-- PDM v2 正常预测、无效 HistoryData、单位不匹配、模型不存在、规范化摘要和确定性；
+- PDM v2 正常预测、无效 `history[]`、单位不匹配、模型不存在、规范化摘要和确定性；
 - 集成审批三种动作的正常、重复、冲突、越权和旧版本；
 - CMMS 资产首次创建、相同幂等重放、不同 payload 冲突和写后响应丢失恢复；
 - CMMS 工单首次创建、相同幂等重放、不同 payload 冲突和外部关联查询；
@@ -690,7 +741,7 @@ prediction_run
 
 ### 端到端测试
 
-使用隔离租户、20 台模拟设备、模拟 CMMS 资产和确定性 testmodel：
+使用隔离租户、20 台模拟设备、模拟 CMMS 资产和确定性 repeat-last fixture：
 
 1. 完成 provisioning 并验证三系统映射；
 2. 注入与六个测点匹配的持续故障；
@@ -729,7 +780,7 @@ prediction_run
 ### 阶段 1：首个垂直切片
 
 - 建立独立 `platform-integration` 组件和总仓 submodule、构建、CI、doctor、部署骨架；
-- 同一变更中实现 PDM v2 HistoryData 接口、实际消费 history 的最小确定性 `testmodel` 路径、集成侧客户端及双方契约测试；
+- 同一变更中实现 PDM v2 HistoryData 接口、实际消费 history 的最小确定性 repeat-last fixture 路径、集成侧客户端及双方契约测试；
 - 同一变更中实现 CMMS `equipment_id`、资产幂等创建接口、集成侧客户端及双方契约测试；
 - 为上述切片增加 OpenAPI/JSON Schema 和平台级合成夹具；
 - 不启动跨系统写操作。

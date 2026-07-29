@@ -14,6 +14,7 @@
 # Runtime state and logs
 .cache/
 .runtime/
+.worktrees/
 .tmp/
 tmp/
 *.log
