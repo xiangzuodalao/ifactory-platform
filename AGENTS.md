@@ -5,7 +5,7 @@
 - 始终从本仓库根目录 `/home/vm/code/ifactory-platform` 启动 Codex。
 - 本仓库是集成与发布总仓；`components/*` 是各自独立的 Git 仓库。
 - 不创建 `agent/` 应用，也不依赖 `OnCall-Agent`。Codex 是本项目的 Agent，通过项目 Skills 和 `digital-platform` MCP 扩展能力。
-- CMMS 负责资产、工单、计划维护和备件；ThingsBoard 负责设备、遥测、告警和规则链；PDM 负责训练、预测及模型产物；`digital-mcp` 只提供受控工具接口。
+- CMMS 负责资产、工单、计划维护和备件；ThingsBoard 负责设备、遥测、告警和规则链；PDM 负责训练、预测及模型产物；`digital-mcp` 只提供受控工具接口；`platform-integration` 承载后续的稳定集成服务边界。
 - 服务之间只通过稳定 API、事件和 `contracts/` 中的契约协作。禁止跨服务直连数据库、共享数据表或复制领域 ORM 模型。
 
 ## 修改组件前
@@ -21,6 +21,7 @@
 - `components/thingsboard`：`README.md`
 - `components/pdm-algorithm`：`AGENTS.md`、`README.md`
 - `components/digital-mcp`：`AGENTS.md`、`README.md`
+- `components/platform-integration`：`AGENTS.md`、`README.md`
 
 ## Git 规则
 

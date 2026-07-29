@@ -46,6 +46,6 @@ git status --short
 git submodule status --recursive
 ```
 
-`doctor.sh` 是只读检查：验证四个 submodule、remote、Skill 链接和元数据、项目 Codex/MCP 配置以及轻量工具。它不会下载依赖、访问上游或修改 Git 状态。
+`doctor.sh` 是只读检查：验证五个 submodule、remote、Skill 链接和元数据、项目 Codex/MCP 配置以及轻量工具。它不会下载依赖、访问上游或修改 Git 状态。
 
 本工作区没有独立 Agent 服务，也不需要启动 OnCall-Agent。后续能力通过单用途 Skill 和 `digital-mcp` 中边界清晰的工具扩展。

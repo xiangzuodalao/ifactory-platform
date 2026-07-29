@@ -9,6 +9,7 @@ readonly -a COMPONENTS=(
   "components/thingsboard"
   "components/pdm-algorithm"
   "components/digital-mcp"
+  "components/platform-integration"
 )
 
 failures=0
@@ -100,7 +101,7 @@ else
   done < <(git config -f "${ROOT_DIR}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null)
 
   if [[ "${#declared_names[@]}" -eq "${#COMPONENTS[@]}" ]]; then
-    pass ".gitmodules declares exactly four submodules"
+    pass ".gitmodules declares exactly ${#COMPONENTS[@]} submodules"
   else
     fail ".gitmodules declares ${#declared_names[@]} submodules; expected ${#COMPONENTS[@]}"
   fi

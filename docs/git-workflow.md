@@ -2,7 +2,7 @@
 
 ## 仓库模型
 
-`ifactory-platform` 是总控仓，`components/cmms`、`components/thingsboard`、`components/pdm-algorithm` 和 `components/digital-mcp` 是独立 Git submodule。总仓提交记录每个组件的准确 commit，不配置自动跟随分支。
+`ifactory-platform` 是总控仓，`components/cmms`、`components/thingsboard`、`components/pdm-algorithm`、`components/digital-mcp` 和 `components/platform-integration` 是独立 Git submodule。总仓提交记录每个组件的准确 commit，不配置自动跟随分支。
 
 首次获取工作区：
 
@@ -13,7 +13,7 @@ cd ifactory-platform
 ./scripts/doctor.sh
 ```
 
-已有 clone 可执行 `bootstrap.sh` 初始化缺失的 submodule 并补齐上游 remote。脚本不会切换已初始化组件的分支，也不会安装组件依赖。
+已有 clone 可执行 `bootstrap.sh` 初始化缺失的 submodule，并仅为 CMMS 和 ThingsBoard 补齐上游 remote。脚本不会切换已初始化组件的分支，也不会安装组件依赖。
 
 ## 日常开发
 

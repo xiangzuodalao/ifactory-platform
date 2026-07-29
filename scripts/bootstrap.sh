@@ -9,6 +9,7 @@ readonly -a COMPONENTS=(
   "components/thingsboard"
   "components/pdm-algorithm"
   "components/digital-mcp"
+  "components/platform-integration"
 )
 
 die() {
