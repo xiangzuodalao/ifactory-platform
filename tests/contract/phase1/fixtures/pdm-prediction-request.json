@@ -9,7 +9,6 @@
   "sampling_frequency": "1min",
   "window_start": 1785283740000,
   "window_end": 1785287700000,
-  "preprocessing_version": "pdm-v2-pilot-1",
   "request_digest": "067096fc115546164d8608cddadc56b185fefea9dffab4c7462c8d28011cdfbd",
   "history": [
     {

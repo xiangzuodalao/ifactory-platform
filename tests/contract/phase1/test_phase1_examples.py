@@ -41,13 +41,49 @@ def _validator(document: dict, name: str) -> Draft202012Validator:
     )
 
 
+def _response_validator(document: dict, response: dict) -> Draft202012Validator:
+    """Validate a concrete OpenAPI response schema against its full component graph."""
+    schema_document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "urn:ifactory:phase1-test:response",
+        "components": document["components"],
+        **response["content"]["application/json"]["schema"],
+    }
+    registry = Registry().with_resource(
+        schema_document["$id"], Resource.from_contents(schema_document)
+    )
+    return Draft202012Validator(
+        schema_document,
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+
+
+class StrictIntegerTokenBoundaryValidator:
+    """Model the strict JSON-token check performed by Task 3/5 service boundaries."""
+
+    def __init__(self, fields: tuple[str, ...]) -> None:
+        self._fields = fields
+
+    def iter_errors(self, instance: dict) -> list[str]:
+        errors = []
+        for field in self._fields:
+            if field == "history[].timestamp":
+                values = [point["timestamp"] for point in instance["history"]]
+            elif field == "forecast[].timestamp":
+                values = [point["timestamp"] for point in instance["forecast"]]
+            else:
+                values = [instance[field]]
+            if any(type(value) is not int for value in values):
+                errors.append(field)
+        return errors
 def _stable_json_bytes(value: object) -> bytes:
     """Fixed test-only encoder for these string/integer/list/object projections, not RFC 8785."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
 
 
-def test_pdm_examples_validate_and_reject_noncanonical_wire_variants() -> None:
-    """Relaxing UUID, decimal, timestamp, or strict-object rules must reject fixtures."""
+def test_pdm_examples_validate_and_reject_provider_boundary_variants() -> None:
+    """Relaxing caller input, token type, or exact forecast cardinality breaks PDM."""
     request = _json_fixture("pdm-prediction-request.json")
     response = _json_fixture("pdm-prediction-response.json")
     document = _openapi("pdm-prediction-v2.yaml")
@@ -74,6 +110,8 @@ def test_pdm_examples_validate_and_reject_noncanonical_wire_variants() -> None:
     assert response["request_digest"] == REQUEST_DIGEST
     assert response["input_digest"] == INPUT_DIGEST
     assert {(point["value"], point["unit"]) for point in response["forecast"]} == {("4.00", "mm/s")}
+    assert "preprocessing_version" not in request
+    assert list(request_validator.iter_errors({**request, "preprocessing_version": "pdm-v2-pilot-1"}))
     for invalid in (
         {**request, "tenant_id": "00000000-0000-4000-8000-00000000000A"},
         {**request, "correlation_id": "00000000000040008000000000000102"},
@@ -93,6 +131,47 @@ def test_pdm_examples_validate_and_reject_noncanonical_wire_variants() -> None:
     assert list(response_validator.iter_errors({**response, "tenant_id": request["tenant_id"]}))
     assert list(response_validator.iter_errors({**response, "risk": "HIGH"}))
     assert list(response_validator.iter_errors({**response, "recommendation": "repair"}))
+    assert list(response_validator.iter_errors({**response, "forecast": response["forecast"][:-1]}))
+    assert list(response_validator.iter_errors({**response, "forecast": [*response["forecast"], response["forecast"][-1]]}))
+
+    # Draft 2020-12 accepts mathematically integral floats. This custom checker
+    # models the Task 3/5 provider/consumer boundary requirement for a JSON integer token.
+    float_request = json.loads(
+        json.dumps(
+            {
+                **request,
+                "window_start": 1785283740000.0,
+                "window_end": 1785287700000.0,
+                "history": [
+                    {**request["history"][0], "timestamp": 1785283740000.0},
+                    *request["history"][1:],
+                ],
+            }
+        )
+    )
+    assert not list(request_validator.iter_errors(float_request))
+    strict_boundary = StrictIntegerTokenBoundaryValidator(
+        ("window_start", "window_end", "history[].timestamp")
+    )
+    assert strict_boundary.iter_errors(float_request) == [
+        "window_start",
+        "window_end",
+        "history[].timestamp",
+    ]
+    float_response = json.loads(
+        json.dumps(
+            {
+                **response,
+                "forecast": [
+                    {**response["forecast"][0], "timestamp": 1785287700000.0},
+                    *response["forecast"][1:],
+                ],
+            }
+        )
+    )
+    assert not list(response_validator.iter_errors(float_response))
+    forecast_boundary = StrictIntegerTokenBoundaryValidator(("forecast[].timestamp",))
+    assert forecast_boundary.iter_errors(float_response) == ["forecast[].timestamp"]
 
 
 def test_provider_request_and_input_digest_projections_match_frozen_literals() -> None:
@@ -125,7 +204,7 @@ def test_provider_request_and_input_digest_projections_match_frozen_literals() -
         "model_profile_id": request["model_profile_id"],
         "model_info_id": request["model_info_id"],
         "meas_code": request["meas_code"],
-        "preprocessing_version": request["preprocessing_version"],
+        "preprocessing_version": "pdm-v2-pilot-1",
         "buckets": [
             {"timestamp": point["timestamp"], "value": point["value"]}
             for point in request_projection["history"]
@@ -167,23 +246,25 @@ def test_consumer_request_and_input_digest_projections_match_frozen_literals() -
         "model_profile_id": request["model_profile_id"],
         "model_info_id": request["model_info_id"],
         "meas_code": request["meas_code"],
-        "preprocessing_version": request["preprocessing_version"],
+        "preprocessing_version": "pdm-v2-pilot-1",
         "buckets": buckets,
     }
     assert hashlib.sha256(_stable_json_bytes(projection)).hexdigest() == REQUEST_DIGEST
     assert hashlib.sha256(_stable_json_bytes(normalized)).hexdigest() == INPUT_DIGEST
 
 
-def test_cmms_examples_validate_without_tenant_body_and_keep_additive_response_shape() -> None:
-    """Adding caller company fields or removing asset identity would break CMMS integration."""
+def test_cmms_examples_keep_legacy_mutations_and_integration_identity_separate() -> None:
+    """Rejecting ordinary AssetPostDTO fields or accepting caller scope breaks CMMS."""
     request = _json_fixture("cmms-asset-request.json")
     response = _json_fixture("cmms-asset-response.json")
     document = _openapi("cmms-integration-v1.yaml")
     request_validator = _validator(document, "AssetCreateRequest")
-    response_validator = _validator(document, "AssetResponse")
+    assert "IntegrationAssetResponse" in document["components"]["schemas"]
+    integration_response_validator = _validator(document, "IntegrationAssetResponse")
+    legacy_response_validator = _validator(document, "AssetResponse")
 
     assert not list(request_validator.iter_errors(request))
-    assert not list(response_validator.iter_errors(response))
+    assert not list(integration_response_validator.iter_errors(response))
     assert request == {
         "name": "Pilot CNC 001",
         "equipment_id": "00000000-0000-4000-8000-000000000101",
@@ -192,5 +273,62 @@ def test_cmms_examples_validate_without_tenant_body_and_keep_additive_response_s
     assert response["name"] == request["name"]
     assert response["equipment_id"] == request["equipment_id"]
     assert not list(request_validator.iter_errors({"name": "Legacy asset still valid"}))
+    assert not list(
+        request_validator.iter_errors(
+            {"name": "Legacy description mutation", "description": "Existing AssetPostDTO field"}
+        )
+    )
     assert list(request_validator.iter_errors({**request, "tenant_id": "00000000-0000-4000-8000-000000000001"}))
+    assert list(request_validator.iter_errors({**request, "company_id": 7}))
     assert list(request_validator.iter_errors({**request, "equipment_id": "not-a-uuid"}))
+    assert not list(
+        request_validator.iter_errors(
+            {**request, "equipment_id": "00000000-0000-4000-8000-00000000010A"}
+        )
+    )
+    assert not list(legacy_response_validator.iter_errors({"id": 202, "name": "Legacy asset"}))
+    assert list(integration_response_validator.iter_errors({"id": 202, "name": "Missing equipment"}))
+
+
+def test_error_examples_are_safe_and_locked_to_each_response_code() -> None:
+    """A changed error code or unsafe example must fail the exact response schema."""
+    for document_name, path, method in (
+        ("pdm-prediction-v2.yaml", "/api/v2/predictions", "post"),
+        ("cmms-integration-v1.yaml", "/api/assets", "post"),
+        ("cmms-integration-v1.yaml", "/api/assets/by-equipment-id/{equipment_id}", "get"),
+    ):
+        document = _openapi(document_name)
+        responses = document["paths"][path][method]["responses"]
+        for status, response in responses.items():
+            if "x-error-code" not in response:
+                continue
+            media = response["content"]["application/json"]
+            example = media["example"]
+            validator = _response_validator(document, response)
+            assert example["code"] == response["x-error-code"]
+            assert not list(validator.iter_errors(example))
+            assert list(validator.iter_errors({**example, "code": "ANY_OTHER_CODE"}))
+            message = example["message"].lower()
+            assert not any(
+                fragment in message
+                for fragment in ("token", "stack", "upstream", "exception", "/", "\\\\")
+            )
+
+
+def test_mapping_strict_boundary_rejects_integral_float_after_json_decoding() -> None:
+    """An integral float token must not cross the integration mapping boundary."""
+    path = ROOT / "contracts/json-schema/equipment-mapping-v1.json"
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    float_mapping = json.loads(
+        """{
+          "tenant_id": "00000000-0000-4000-8000-000000000001",
+          "equipment_id": "00000000-0000-4000-8000-000000000101",
+          "cmms_asset_id": 101.0,
+          "tb_device_id": "00000000-0000-4000-8000-000000000201",
+          "enabled": true
+        }"""
+    )
+    assert not list(validator.iter_errors(float_mapping))
+    strict_boundary = StrictIntegerTokenBoundaryValidator(("cmms_asset_id",))
+    assert strict_boundary.iter_errors(float_mapping) == ["cmms_asset_id"]

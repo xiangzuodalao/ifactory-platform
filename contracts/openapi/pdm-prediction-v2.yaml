@@ -40,42 +40,90 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PredictionError'
+                allOf:
+                  - $ref: '#/components/schemas/PredictionError'
+                  - type: object
+                    properties:
+                      code:
+                        const: PREDICTION_UNAUTHORIZED
+              example:
+                code: PREDICTION_UNAUTHORIZED
+                message: Authentication failed.
         '404':
           description: Requested model identity is unavailable.
           x-error-code: MODEL_NOT_FOUND
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PredictionError'
+                allOf:
+                  - $ref: '#/components/schemas/PredictionError'
+                  - type: object
+                    properties:
+                      code:
+                        const: MODEL_NOT_FOUND
+              example:
+                code: MODEL_NOT_FOUND
+                message: Requested model is unavailable.
         '409':
           description: The supplied request digest differs from PDM recomputation.
           x-error-code: REQUEST_DIGEST_MISMATCH
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PredictionError'
+                allOf:
+                  - $ref: '#/components/schemas/PredictionError'
+                  - type: object
+                    properties:
+                      code:
+                        const: REQUEST_DIGEST_MISMATCH
+              example:
+                code: REQUEST_DIGEST_MISMATCH
+                message: Request digest does not match.
         '422':
           description: Request values cannot form a valid prediction input.
           x-error-code: INVALID_PREDICTION_REQUEST
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PredictionError'
+                allOf:
+                  - $ref: '#/components/schemas/PredictionError'
+                  - type: object
+                    properties:
+                      code:
+                        const: INVALID_PREDICTION_REQUEST
+              example:
+                code: INVALID_PREDICTION_REQUEST
+                message: Prediction request is invalid.
         '500':
           description: A safe internal prediction failure occurred.
           x-error-code: PREDICTION_FAILED
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PredictionError'
+                allOf:
+                  - $ref: '#/components/schemas/PredictionError'
+                  - type: object
+                    properties:
+                      code:
+                        const: PREDICTION_FAILED
+              example:
+                code: PREDICTION_FAILED
+                message: Prediction could not be completed.
         '503':
           description: Prediction catalog is not ready.
           x-error-code: PREDICTION_CATALOG_NOT_READY
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PredictionError'
+                allOf:
+                  - $ref: '#/components/schemas/PredictionError'
+                  - type: object
+                    properties:
+                      code:
+                        const: PREDICTION_CATALOG_NOT_READY
+              example:
+                code: PREDICTION_CATALOG_NOT_READY
+                message: Prediction catalog is not ready.
 components:
   securitySchemes:
     PredictionBearer:
@@ -90,6 +138,8 @@ components:
     EpochMilliseconds:
       type: integer
       minimum: 0
+      x-json-integer-token: true
+      description: JSON integer token required at the PDM provider boundary.
     DecimalString:
       type: string
       pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'
@@ -137,7 +187,6 @@ components:
         - sampling_frequency
         - window_start
         - window_end
-        - preprocessing_version
         - request_digest
         - history
       properties:
@@ -166,9 +215,6 @@ components:
           $ref: '#/components/schemas/EpochMilliseconds'
         window_end:
           $ref: '#/components/schemas/EpochMilliseconds'
-        preprocessing_version:
-          type: string
-          minLength: 1
         request_digest:
           $ref: '#/components/schemas/Sha256'
         history:
@@ -214,6 +260,8 @@ components:
           format: date-time
         forecast:
           type: array
+          minItems: 15
+          maxItems: 15
           items:
             $ref: '#/components/schemas/ForecastPoint'
     PredictionError:

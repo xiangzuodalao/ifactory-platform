@@ -4,7 +4,6 @@ import warnings
 from jsonschema import Draft202012Validator, FormatChecker
 import yaml
 from openapi_spec_validator import validate_spec
-from referencing import Registry, Resource
 
 
 ROOT = Path(__file__).parents[3]
@@ -34,8 +33,8 @@ def _openapi(relative: str) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def test_pdm_v2_operation_requires_opaque_bearer_and_safe_errors() -> None:
-    """Removing v2 auth or exposing diagnostic fields would break its service boundary."""
+def test_pdm_v2_operation_requires_opaque_bearer_and_stable_error_boundaries() -> None:
+    """A generic error response must not permit a different stable error code."""
     document = _openapi("contracts/openapi/pdm-prediction-v2.yaml")
     operation = document["paths"]["/api/v2/predictions"]["post"]
     scheme = document["components"]["securitySchemes"]["PredictionBearer"]
@@ -57,7 +56,13 @@ def test_pdm_v2_operation_requires_opaque_bearer_and_safe_errors() -> None:
         response = operation["responses"][status]
         assert response["x-error-code"] == code
         assert response["content"]["application/json"]["schema"] == {
-            "$ref": "#/components/schemas/PredictionError"
+            "allOf": [
+                {"$ref": "#/components/schemas/PredictionError"},
+                {
+                    "type": "object",
+                    "properties": {"code": {"const": code}},
+                },
+            ]
         }
     error = document["components"]["schemas"]["PredictionError"]
     assert error["additionalProperties"] is False
@@ -65,8 +70,8 @@ def test_pdm_v2_operation_requires_opaque_bearer_and_safe_errors() -> None:
     assert set(error["properties"]) == {"code", "message"}
 
 
-def test_pdm_v2_schemas_freeze_canonical_identity_decimal_and_response_boundary() -> None:
-    """Relaxing wire types or adding tenant/risk output would break PDM consumers."""
+def test_pdm_v2_schemas_freeze_provider_owned_input_and_response_boundary() -> None:
+    """Letting callers choose preprocessing or forecast length breaks provider determinism."""
     document = _openapi("contracts/openapi/pdm-prediction-v2.yaml")
     schemas = document["components"]["schemas"]
     request = schemas["PredictionRequestV2"]
@@ -84,7 +89,6 @@ def test_pdm_v2_schemas_freeze_canonical_identity_decimal_and_response_boundary(
         "sampling_frequency",
         "window_start",
         "window_end",
-        "preprocessing_version",
         "request_digest",
         "history",
     ]
@@ -94,17 +98,29 @@ def test_pdm_v2_schemas_freeze_canonical_identity_decimal_and_response_boundary(
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     }
     assert schemas["DecimalString"]["pattern"] == "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
-    assert schemas["EpochMilliseconds"] == {"type": "integer", "minimum": 0}
+    assert schemas["EpochMilliseconds"] == {
+        "type": "integer",
+        "minimum": 0,
+        "x-json-integer-token": True,
+        "description": "JSON integer token required at the PDM provider boundary.",
+    }
+    assert "preprocessing_version" not in request["properties"]
     assert response["additionalProperties"] is False
     assert response["properties"]["generated_at"] == {
         "type": "string",
         "format": "date-time",
     }
     assert {"tenant_id", "risk", "recommendation"}.isdisjoint(response["properties"])
+    assert response["properties"]["forecast"] == {
+        "type": "array",
+        "minItems": 15,
+        "maxItems": 15,
+        "items": {"$ref": "#/components/schemas/ForecastPoint"},
+    }
 
 
-def test_cmms_asset_operations_preserve_company_scoping_and_conditional_idempotency() -> None:
-    """Making the header global or accepting caller company fields breaks existing clients."""
+def test_cmms_asset_operations_preserve_legacy_and_integration_response_boundaries() -> None:
+    """Changing legacy status/shape or integration identity guarantees breaks clients."""
     document = _openapi("contracts/openapi/cmms-integration-v1.yaml")
     post = document["paths"]["/api/assets"]["post"]
     get = document["paths"]["/api/assets/by-equipment-id/{equipment_id}"]["get"]
@@ -118,8 +134,31 @@ def test_cmms_asset_operations_preserve_company_scoping_and_conditional_idempote
     assert "pilot-asset:{canonical tb_device_id}" in key["description"]
     assert "company-scoped" in get["description"]
     assert request["required"] == ["name"]
-    assert request["additionalProperties"] is False
+    assert request["additionalProperties"] is True
     assert {"tenant_id", "company_id"}.isdisjoint(request["properties"])
+    assert request["allOf"] == [
+        {"not": {"required": ["tenant_id"]}},
+        {"not": {"required": ["company_id"]}},
+    ]
+    assert document["components"]["schemas"]["CanonicalUuid"] == {
+        "type": "string",
+        "format": "uuid",
+    }
+    assert post["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/AssetResponse"
+    }
+    assert post["responses"]["201"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/IntegrationAssetResponse"
+    }
+    assert get["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/IntegrationAssetResponse"
+    }
+    assert document["components"]["schemas"]["AssetResponse"]["required"] == ["id", "name"]
+    assert document["components"]["schemas"]["IntegrationAssetResponse"]["required"] == [
+        "id",
+        "name",
+        "equipment_id",
+    ]
     assert post["responses"]["400"]["x-error-code"] == "IDEMPOTENCY_KEY_REQUIRED"
     assert post["responses"]["409"]["x-error-code"] == "IDEMPOTENCY_CONFLICT"
     assert get["responses"]["404"]["x-error-code"] == "ASSET_NOT_FOUND"
@@ -151,3 +190,6 @@ def test_equipment_mapping_schema_validates_instances_and_declares_tenant_unique
     assert "(tenant_id, equipment_id)" in invariants
     assert "(tenant_id, cmms_asset_id)" in invariants
     assert "(tenant_id, tb_device_id)" in invariants
+    cmms_asset_id = schema["properties"]["cmms_asset_id"]
+    assert cmms_asset_id["x-json-integer-token"] is True
+    assert "JSON integer token" in cmms_asset_id["$comment"]

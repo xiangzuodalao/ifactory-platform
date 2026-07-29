@@ -22,7 +22,9 @@
     },
     "cmms_asset_id": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "x-json-integer-token": true,
+      "$comment": "JSON integer token required at the platform-integration to CMMS boundary; standard Draft 2020-12 integer validation alone accepts integral floating-point values."
     },
     "tb_device_id": {
       "$ref": "#/$defs/canonical_uuid"
