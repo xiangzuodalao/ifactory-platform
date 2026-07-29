@@ -1,0 +1,229 @@
+openapi: 3.1.0
+info:
+  title: PDM Prediction API
+  version: 2.0.0
+  description: >-
+    Provider: PDM Algorithm. Consumers: platform-integration. v2 is additive to
+    the legacy prediction API and has a 10-second caller timeout.
+  x-provider: pdm-algorithm
+  x-consumers:
+    - platform-integration
+  x-compatibility: additive-v2; legacy /measPredict/predict is unchanged
+  x-timeout: 10s
+  x-idempotency: request_digest freezes replay identity; digest mismatch returns 409
+paths:
+  /api/v2/predictions:
+    post:
+      operationId: createPredictionV2
+      summary: Produce a deterministic forecast from supplied history.
+      description: >-
+        Requires an opaque service Bearer token. The request is replay-safe only
+        when request_digest describes the exact canonical request projection.
+      security:
+        - PredictionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PredictionRequestV2'
+      responses:
+        '200':
+          description: Deterministic forecast generated from the supplied history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionResponseV2'
+        '401':
+          description: Service token was not accepted.
+          x-error-code: PREDICTION_UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionError'
+        '404':
+          description: Requested model identity is unavailable.
+          x-error-code: MODEL_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionError'
+        '409':
+          description: The supplied request digest differs from PDM recomputation.
+          x-error-code: REQUEST_DIGEST_MISMATCH
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionError'
+        '422':
+          description: Request values cannot form a valid prediction input.
+          x-error-code: INVALID_PREDICTION_REQUEST
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionError'
+        '500':
+          description: A safe internal prediction failure occurred.
+          x-error-code: PREDICTION_FAILED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionError'
+        '503':
+          description: Prediction catalog is not ready.
+          x-error-code: PREDICTION_CATALOG_NOT_READY
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionError'
+components:
+  securitySchemes:
+    PredictionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-service-token
+  schemas:
+    CanonicalUuid:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    EpochMilliseconds:
+      type: integer
+      minimum: 0
+    DecimalString:
+      type: string
+      pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'
+    Sha256:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    HistoryPoint:
+      type: object
+      additionalProperties: false
+      required: [data_id, timestamp, value, unit]
+      properties:
+        data_id:
+          type: string
+          minLength: 1
+        timestamp:
+          $ref: '#/components/schemas/EpochMilliseconds'
+        value:
+          $ref: '#/components/schemas/DecimalString'
+        unit:
+          type: string
+          minLength: 1
+    ForecastPoint:
+      type: object
+      additionalProperties: false
+      required: [timestamp, value, unit]
+      properties:
+        timestamp:
+          $ref: '#/components/schemas/EpochMilliseconds'
+        value:
+          $ref: '#/components/schemas/DecimalString'
+        unit:
+          type: string
+          minLength: 1
+    PredictionRequestV2:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - correlation_id
+        - equipment_id
+        - model_profile_id
+        - model_info_id
+        - meas_code
+        - unit
+        - sampling_frequency
+        - window_start
+        - window_end
+        - preprocessing_version
+        - request_digest
+        - history
+      properties:
+        tenant_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        correlation_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        equipment_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        model_profile_id:
+          type: string
+          minLength: 1
+        model_info_id:
+          type: string
+          minLength: 1
+        meas_code:
+          type: string
+          minLength: 1
+        unit:
+          type: string
+          minLength: 1
+        sampling_frequency:
+          type: string
+          minLength: 1
+        window_start:
+          $ref: '#/components/schemas/EpochMilliseconds'
+        window_end:
+          $ref: '#/components/schemas/EpochMilliseconds'
+        preprocessing_version:
+          type: string
+          minLength: 1
+        request_digest:
+          $ref: '#/components/schemas/Sha256'
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryPoint'
+    PredictionResponseV2:
+      type: object
+      additionalProperties: false
+      required:
+        - correlation_id
+        - equipment_id
+        - model_profile_id
+        - model_info_id
+        - model_artifact_sha256
+        - meas_code
+        - request_digest
+        - input_digest
+        - generated_at
+        - forecast
+      properties:
+        correlation_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        equipment_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        model_profile_id:
+          type: string
+          minLength: 1
+        model_info_id:
+          type: string
+          minLength: 1
+        model_artifact_sha256:
+          $ref: '#/components/schemas/Sha256'
+        meas_code:
+          type: string
+          minLength: 1
+        request_digest:
+          $ref: '#/components/schemas/Sha256'
+        input_digest:
+          $ref: '#/components/schemas/Sha256'
+        generated_at:
+          type: string
+          format: date-time
+        forecast:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForecastPoint'
+    PredictionError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          minLength: 1
+        message:
+          type: string
+          minLength: 1

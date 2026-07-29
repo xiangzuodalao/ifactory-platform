@@ -1,0 +1,88 @@
+{
+  "correlation_id": "00000000-0000-4000-8000-000000000102",
+  "equipment_id": "00000000-0000-4000-8000-000000000101",
+  "model_profile_id": "pilot-cnc-vibration",
+  "model_info_id": "pilot-fixture-v1-cnc-vibration",
+  "model_artifact_sha256": "5feeb31058fe0521f94758faa22214afe4619e466e22cbb8c6fb7ffcf2369562",
+  "meas_code": "vibration_rms",
+  "request_digest": "067096fc115546164d8608cddadc56b185fefea9dffab4c7462c8d28011cdfbd",
+  "input_digest": "c67fe58c14f2e8a1ef252e6ff47b4877c0da8fa52664772dd3c08ae3d6552609",
+  "generated_at": "2026-07-29T01:15:00Z",
+  "forecast": [
+    {
+      "timestamp": 1785287700000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785287760000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785287820000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785287880000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785287940000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288000000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288060000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288120000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288180000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288240000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288300000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288360000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288420000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288480000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "timestamp": 1785288540000,
+      "value": "4.00",
+      "unit": "mm/s"
+    }
+  ]
+}
