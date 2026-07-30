@@ -47,6 +47,11 @@ jobs:
           uv run --with pytest==9.0.2
           pytest tests/test_workspace_governance.py -v
 
+      - name: Validate Phase 1 integration contracts
+        run: >
+          uv run --directory tests --frozen
+          pytest contract/phase1 -v
+
       - name: Smoke-test the MCP STDIO entry point
         run: ./scripts/run-digital-mcp.sh </dev/null
 
