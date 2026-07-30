@@ -1,0 +1,22 @@
+name: predictive-maintenance-shadow
+
+services:
+  identity-discovery:
+    build:
+      context: ../../components/platform-integration
+    image: ifactory-platform-integration:phase2
+    command: ["platform-integration", "discover-identities", "--format", "env"]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      PLATFORM_INTEGRATION_DATABASE_URL: postgresql+psycopg://${INTEGRATION_POSTGRES_USER:?required}:${INTEGRATION_POSTGRES_PASSWORD:?required}@integration-db:5432/${INTEGRATION_POSTGRES_DB:?required}
+      PLATFORM_INTEGRATION_TENANT_ALIAS: ${PLATFORM_INTEGRATION_TENANT_ALIAS:?required}
+      PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE: ${PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE:?required}
+      PLATFORM_INTEGRATION_PDM_BASE_URL: ${PLATFORM_INTEGRATION_PDM_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_BASE_URL: ${PLATFORM_INTEGRATION_TB_BASE_URL:?required}
+      PLATFORM_INTEGRATION_CMMS_BASE_URL: ${PLATFORM_INTEGRATION_CMMS_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_CREDENTIAL_REF: ${PLATFORM_INTEGRATION_TB_CREDENTIAL_REF:?required}
+      PLATFORM_INTEGRATION_CMMS_CREDENTIAL_REF: ${PLATFORM_INTEGRATION_CMMS_CREDENTIAL_REF:?required}
+      PILOT_TB_CREDENTIAL: ${PILOT_TB_CREDENTIAL:?required}
+      PILOT_CMMS_CREDENTIAL: ${PILOT_CMMS_CREDENTIAL:?required}

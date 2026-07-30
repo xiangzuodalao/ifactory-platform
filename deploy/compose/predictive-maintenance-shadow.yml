@@ -1,0 +1,143 @@
+name: predictive-maintenance-shadow
+
+services:
+  integration-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${INTEGRATION_POSTGRES_DB:?required}
+      POSTGRES_USER: ${INTEGRATION_POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${INTEGRATION_POSTGRES_PASSWORD:?required}
+    volumes:
+      - integration-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pdm:
+    build:
+      context: ../../components/pdm-algorithm
+    image: ifactory-pdm-shadow:phase2
+    environment:
+      VALEO_PDM_ISOLATED_FIXTURE_MODE: "1"
+      VALEO_PDM_PREDICTION_V2_BEARER_TOKEN: ${VALEO_PDM_PREDICTION_V2_BEARER_TOKEN:?required}
+      VALEO_PDM_ALLOWED_TENANT_IDS: ${VALEO_PDM_ALLOWED_TENANT_IDS:?required}
+      VALEO_PDM_PREDICTION_V2_MANIFEST: /fixtures/manifest.runtime.yaml
+      VALEO_PDM_PREDICTION_V2_OBJECT_ROOT: /fixtures/objects
+    volumes:
+      - ../../.runtime/pdm-fixtures:/fixtures:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10021/readyz').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  integration-migrate:
+    build:
+      context: ../../components/platform-integration
+    image: ifactory-platform-integration:phase2
+    command: ["platform-integration", "migrate"]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      PLATFORM_INTEGRATION_DATABASE_URL: postgresql+psycopg://${INTEGRATION_POSTGRES_USER:?required}:${INTEGRATION_POSTGRES_PASSWORD:?required}@integration-db:5432/${INTEGRATION_POSTGRES_DB:?required}
+      PLATFORM_INTEGRATION_TENANT_ALIAS: ${PLATFORM_INTEGRATION_TENANT_ALIAS:?required}
+      PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE: ${PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE:?required}
+      PLATFORM_INTEGRATION_PDM_BASE_URL: ${PLATFORM_INTEGRATION_PDM_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_BASE_URL: ${PLATFORM_INTEGRATION_TB_BASE_URL:?required}
+      PLATFORM_INTEGRATION_CMMS_BASE_URL: ${PLATFORM_INTEGRATION_CMMS_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_TENANT_ID: ${PLATFORM_INTEGRATION_TB_TENANT_ID:?run identity discovery first}
+      PLATFORM_INTEGRATION_CMMS_COMPANY_ID: ${PLATFORM_INTEGRATION_CMMS_COMPANY_ID:?run identity discovery first}
+    depends_on:
+      integration-db:
+        condition: service_healthy
+
+  integration-api:
+    build:
+      context: ../../components/platform-integration
+    image: ifactory-platform-integration:phase2
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 127.0.0.1:18080:8080
+    environment:
+      PLATFORM_INTEGRATION_DATABASE_URL: postgresql+psycopg://${INTEGRATION_POSTGRES_USER:?required}:${INTEGRATION_POSTGRES_PASSWORD:?required}@integration-db:5432/${INTEGRATION_POSTGRES_DB:?required}
+      PLATFORM_INTEGRATION_TENANT_ALIAS: ${PLATFORM_INTEGRATION_TENANT_ALIAS:?required}
+      PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE: ${PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE:?required}
+      PLATFORM_INTEGRATION_PDM_BASE_URL: ${PLATFORM_INTEGRATION_PDM_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_BASE_URL: ${PLATFORM_INTEGRATION_TB_BASE_URL:?required}
+      PLATFORM_INTEGRATION_CMMS_BASE_URL: ${PLATFORM_INTEGRATION_CMMS_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_TENANT_ID: ${PLATFORM_INTEGRATION_TB_TENANT_ID:?run identity discovery first}
+      PLATFORM_INTEGRATION_CMMS_COMPANY_ID: ${PLATFORM_INTEGRATION_CMMS_COMPANY_ID:?run identity discovery first}
+      PLATFORM_INTEGRATION_TB_CREDENTIAL_REF: ${PLATFORM_INTEGRATION_TB_CREDENTIAL_REF:?required}
+      PLATFORM_INTEGRATION_CMMS_CREDENTIAL_REF: ${PLATFORM_INTEGRATION_CMMS_CREDENTIAL_REF:?required}
+      PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF: ${PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF:?required}
+      PLATFORM_INTEGRATION_CMMS_WEBHOOK_SECRET_REF: ${PLATFORM_INTEGRATION_CMMS_WEBHOOK_SECRET_REF:?required}
+      PILOT_TB_CREDENTIAL: ${PILOT_TB_CREDENTIAL:?required}
+      PILOT_CMMS_CREDENTIAL: ${PILOT_CMMS_CREDENTIAL:?required}
+    depends_on:
+      integration-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  scheduler:
+    build:
+      context: ../../components/platform-integration
+    image: ifactory-platform-integration:phase2
+    command: ["platform-integration", "scheduler"]
+    profiles: [continuous]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      PLATFORM_INTEGRATION_DATABASE_URL: postgresql+psycopg://${INTEGRATION_POSTGRES_USER:?required}:${INTEGRATION_POSTGRES_PASSWORD:?required}@integration-db:5432/${INTEGRATION_POSTGRES_DB:?required}
+      PLATFORM_INTEGRATION_TENANT_ALIAS: ${PLATFORM_INTEGRATION_TENANT_ALIAS:?required}
+      PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE: ${PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE:?required}
+      PLATFORM_INTEGRATION_PDM_BASE_URL: ${PLATFORM_INTEGRATION_PDM_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_BASE_URL: ${PLATFORM_INTEGRATION_TB_BASE_URL:?required}
+      PLATFORM_INTEGRATION_CMMS_BASE_URL: ${PLATFORM_INTEGRATION_CMMS_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_TENANT_ID: ${PLATFORM_INTEGRATION_TB_TENANT_ID:?run identity discovery first}
+      PLATFORM_INTEGRATION_CMMS_COMPANY_ID: ${PLATFORM_INTEGRATION_CMMS_COMPANY_ID:?run identity discovery first}
+    depends_on:
+      integration-migrate:
+        condition: service_completed_successfully
+      pdm:
+        condition: service_healthy
+
+  prediction-worker:
+    build:
+      context: ../../components/platform-integration
+    image: ifactory-platform-integration:phase2
+    command: ["platform-integration", "prediction-worker"]
+    profiles: [continuous]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      PLATFORM_INTEGRATION_DATABASE_URL: postgresql+psycopg://${INTEGRATION_POSTGRES_USER:?required}:${INTEGRATION_POSTGRES_PASSWORD:?required}@integration-db:5432/${INTEGRATION_POSTGRES_DB:?required}
+      PLATFORM_INTEGRATION_TENANT_ALIAS: ${PLATFORM_INTEGRATION_TENANT_ALIAS:?required}
+      PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE: ${PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE:?required}
+      PLATFORM_INTEGRATION_PDM_BASE_URL: ${PLATFORM_INTEGRATION_PDM_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_BASE_URL: ${PLATFORM_INTEGRATION_TB_BASE_URL:?required}
+      PLATFORM_INTEGRATION_CMMS_BASE_URL: ${PLATFORM_INTEGRATION_CMMS_BASE_URL:?required}
+      PLATFORM_INTEGRATION_TB_TENANT_ID: ${PLATFORM_INTEGRATION_TB_TENANT_ID:?run identity discovery first}
+      PLATFORM_INTEGRATION_CMMS_COMPANY_ID: ${PLATFORM_INTEGRATION_CMMS_COMPANY_ID:?run identity discovery first}
+      PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF: ${PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF:?required}
+      PLATFORM_INTEGRATION_TB_CREDENTIAL_REF: ${PLATFORM_INTEGRATION_TB_CREDENTIAL_REF:?required}
+      PILOT_PDM_CREDENTIAL: ${PILOT_PDM_CREDENTIAL:?required}
+      PILOT_TB_CREDENTIAL: ${PILOT_TB_CREDENTIAL:?required}
+    depends_on:
+      integration-migrate:
+        condition: service_completed_successfully
+      pdm:
+        condition: service_healthy
+
+volumes:
+  integration-postgres-data:

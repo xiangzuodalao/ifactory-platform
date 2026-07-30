@@ -5,9 +5,13 @@ requires-python = ">=3.12"
 dependencies = [
   "jsonschema>=4.25,<5",
   "openapi-spec-validator==0.7.2",
+  "python-dotenv==1.2.2",
   "pytest==9.0.2",
   "pyyaml==6.0.3",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["contract"]
+markers = [
+  "pilot_e2e: opt-in isolated Phase 2 acceptance requiring a confirmed seed receipt",
+]
