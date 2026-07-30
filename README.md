@@ -1,6 +1,6 @@
 # iFactory Platform
 
-iFactory Platform 是 CMMS、ThingsBoard、PDM Algorithm 与数字化平台 MCP 的集成总仓。业务代码保留在独立组件仓库中；本仓库统一锁定组件版本，并维护契约、部署、端到端测试和 Codex 项目能力。
+iFactory Platform 是 CMMS、ThingsBoard、PDM Algorithm、数字化平台 MCP 与平台集成服务的集成总仓。业务代码保留在独立组件仓库中；本仓库统一锁定组件版本，并维护契约、部署、端到端测试和 Codex 项目能力。
 
 本项目不维护独立 Agent 应用。Codex 直接作为开发与运维协作 Agent，通过仓库级 `AGENTS.md`、Skills 和 `digital-platform` MCP 获取项目规则、受控训练流程及后续系统工具。
 
@@ -15,7 +15,8 @@ ifactory-platform/
 │   ├── cmms/
 │   ├── thingsboard/
 │   ├── pdm-algorithm/
-│   └── digital-mcp/
+│   ├── digital-mcp/
+│   └── platform-integration/
 ├── contracts/
 ├── deploy/
 ├── docs/

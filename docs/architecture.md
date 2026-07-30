@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-`ifactory-platform` 是四个独立仓库的组合与治理入口：
+`ifactory-platform` 是五个独立仓库的组合与治理入口：
 
 | 组件 | 当前职责 |
 |---|---|
@@ -10,6 +10,7 @@
 | ThingsBoard | 设备、遥测、告警与规则链 |
 | PDM Algorithm | 数据检查、模型训练、预测与模型产物 |
 | `digital-mcp` | 将平台 HTTP API 暴露为受控 MCP 工具；当前只适配 PDM |
+| `platform-integration` | 后续跨组件稳定 API 与事件集成的独立服务边界；当前提供运行骨架 |
 
 本阶段仅整理目录、Git、Codex、Skills 和现有 MCP，不实现 CMMS、ThingsBoard 与 PDM 之间的新业务链路，也不提供生产部署。
 

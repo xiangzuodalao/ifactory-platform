@@ -1,0 +1,411 @@
+{
+  "tenant_id": "00000000-0000-4000-8000-000000000001",
+  "correlation_id": "00000000-0000-4000-8000-000000000102",
+  "equipment_id": "00000000-0000-4000-8000-000000000101",
+  "model_profile_id": "pilot-cnc-vibration",
+  "model_info_id": "pilot-fixture-v1-cnc-vibration",
+  "meas_code": "vibration_rms",
+  "unit": "mm/s",
+  "sampling_frequency": "1min",
+  "window_start": 1785283740000,
+  "window_end": 1785287700000,
+  "request_digest": "067096fc115546164d8608cddadc56b185fefea9dffab4c7462c8d28011cdfbd",
+  "history": [
+    {
+      "data_id": "fixture-000",
+      "timestamp": 1785283740000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-001",
+      "timestamp": 1785283800000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-002",
+      "timestamp": 1785283860000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-003",
+      "timestamp": 1785283920000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-004",
+      "timestamp": 1785283980000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-005",
+      "timestamp": 1785284040000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-006",
+      "timestamp": 1785284100000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-007",
+      "timestamp": 1785284160000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-008",
+      "timestamp": 1785284220000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-009",
+      "timestamp": 1785284280000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-010",
+      "timestamp": 1785284340000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-011",
+      "timestamp": 1785284400000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-012",
+      "timestamp": 1785284460000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-013",
+      "timestamp": 1785284520000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-014",
+      "timestamp": 1785284580000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-015",
+      "timestamp": 1785284640000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-016",
+      "timestamp": 1785284700000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-017",
+      "timestamp": 1785284760000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-018",
+      "timestamp": 1785284820000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-019",
+      "timestamp": 1785284880000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-020",
+      "timestamp": 1785284940000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-021",
+      "timestamp": 1785285000000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-022",
+      "timestamp": 1785285060000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-023",
+      "timestamp": 1785285120000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-024",
+      "timestamp": 1785285180000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-025",
+      "timestamp": 1785285240000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-026",
+      "timestamp": 1785285300000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-027",
+      "timestamp": 1785285360000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-028",
+      "timestamp": 1785285420000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-029",
+      "timestamp": 1785285480000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-030",
+      "timestamp": 1785285540000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-031",
+      "timestamp": 1785285600000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-032",
+      "timestamp": 1785285660000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-033",
+      "timestamp": 1785285720000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-034",
+      "timestamp": 1785285780000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-035",
+      "timestamp": 1785285840000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-036",
+      "timestamp": 1785285900000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-037",
+      "timestamp": 1785285960000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-038",
+      "timestamp": 1785286020000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-039",
+      "timestamp": 1785286080000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-040",
+      "timestamp": 1785286140000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-041",
+      "timestamp": 1785286200000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-042",
+      "timestamp": 1785286260000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-043",
+      "timestamp": 1785286320000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-044",
+      "timestamp": 1785286380000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-045",
+      "timestamp": 1785286440000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-046",
+      "timestamp": 1785286500000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-047",
+      "timestamp": 1785286560000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-048",
+      "timestamp": 1785286620000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-049",
+      "timestamp": 1785286680000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-050",
+      "timestamp": 1785286740000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-051",
+      "timestamp": 1785286800000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-052",
+      "timestamp": 1785286860000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-053",
+      "timestamp": 1785286920000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-054",
+      "timestamp": 1785286980000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-055",
+      "timestamp": 1785287040000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-056",
+      "timestamp": 1785287100000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-057",
+      "timestamp": 1785287160000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-058",
+      "timestamp": 1785287220000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-059",
+      "timestamp": 1785287280000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-060",
+      "timestamp": 1785287340000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-061",
+      "timestamp": 1785287400000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-062",
+      "timestamp": 1785287460000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-063",
+      "timestamp": 1785287520000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-064",
+      "timestamp": 1785287580000,
+      "value": "4.00",
+      "unit": "mm/s"
+    },
+    {
+      "data_id": "fixture-065",
+      "timestamp": 1785287640000,
+      "value": "4.00",
+      "unit": "mm/s"
+    }
+  ]
+}

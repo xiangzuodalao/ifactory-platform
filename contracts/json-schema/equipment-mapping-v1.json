@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ifactory:contracts:equipment-mapping-v1",
+  "title": "Equipment mapping v1",
+  "description": "One enabled mapping binds a tenant-scoped platform equipment UUID to one CMMS asset and one ThingsBoard device.",
+  "$comment": "Cross-record uniqueness is enforced by platform-integration storage, not JSON Schema: (tenant_id, equipment_id), (tenant_id, cmms_asset_id), and (tenant_id, tb_device_id) are each unique. This contract contains only the approved enabled shape; RESERVED and ACTIVE are internal provisioning states.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id",
+    "equipment_id",
+    "cmms_asset_id",
+    "tb_device_id",
+    "enabled"
+  ],
+  "properties": {
+    "tenant_id": {
+      "$ref": "#/$defs/canonical_uuid"
+    },
+    "equipment_id": {
+      "$ref": "#/$defs/canonical_uuid"
+    },
+    "cmms_asset_id": {
+      "type": "integer",
+      "minimum": 1,
+      "x-json-integer-token": true,
+      "$comment": "JSON integer token required at the platform-integration to CMMS boundary; standard Draft 2020-12 integer validation alone accepts integral floating-point values."
+    },
+    "tb_device_id": {
+      "$ref": "#/$defs/canonical_uuid"
+    },
+    "enabled": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "canonical_uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    }
+  }
+}

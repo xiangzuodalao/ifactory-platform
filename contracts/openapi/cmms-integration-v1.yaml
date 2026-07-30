@@ -1,0 +1,182 @@
+openapi: 3.1.0
+info:
+  title: CMMS Integration Asset API
+  version: 1.0.0
+  description: >-
+    Provider: CMMS. Consumer: platform-integration. Existing JWT Bearer
+    authentication derives company scope; this version is additive to ordinary asset creation.
+  x-provider: cmms
+  x-consumers:
+    - platform-integration
+  x-compatibility: additive optional equipment_id field
+  x-timeout: 10s
+  x-idempotency: company/key/request digest replays the original 201; body drift returns 409
+paths:
+  /api/assets:
+    post:
+      operationId: createAsset
+      summary: Create an asset in the authenticated company.
+      description: >-
+        Ordinary POST remains valid without equipment_id or Idempotency-Key. When
+        equipment_id is present, identical company/key/request digest replays the
+        original 201 and a changed body returns IDEMPOTENCY_CONFLICT.
+      security:
+        - CmmsJwtBearer: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: >-
+            Required only when equipment_id is present. Its required value is
+            pilot-asset:{canonical tb_device_id}; it is not a global required header.
+          schema:
+            type: string
+            pattern: '^pilot-asset:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetCreateRequest'
+      responses:
+        '200':
+          description: Ordinary legacy asset POST completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetResponse'
+        '201':
+          description: Integration asset created or the original idempotent 201 replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationAssetResponse'
+        '400':
+          description: equipment_id was supplied without the required idempotency key.
+          x-error-code: IDEMPOTENCY_KEY_REQUIRED
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CmmsError'
+                  - type: object
+                    properties:
+                      code:
+                        const: IDEMPOTENCY_KEY_REQUIRED
+              example:
+                code: IDEMPOTENCY_KEY_REQUIRED
+                message: Idempotency key is required.
+        '409':
+          description: The company/key identifies a different request body.
+          x-error-code: IDEMPOTENCY_CONFLICT
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CmmsError'
+                  - type: object
+                    properties:
+                      code:
+                        const: IDEMPOTENCY_CONFLICT
+              example:
+                code: IDEMPOTENCY_CONFLICT
+                message: Idempotency key conflicts with this request.
+  /api/assets/by-equipment-id/{equipment_id}:
+    get:
+      operationId: getAssetByEquipmentId
+      summary: Look up an asset by platform equipment identity.
+      description: The lookup is company-scoped from the authenticated JWT.
+      security:
+        - CmmsJwtBearer: []
+      parameters:
+        - name: equipment_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/CanonicalUuid'
+      responses:
+        '200':
+          description: Asset in the authenticated company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationAssetResponse'
+        '404':
+          description: No company-scoped asset matches the equipment identity.
+          x-error-code: ASSET_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CmmsError'
+                  - type: object
+                    properties:
+                      code:
+                        const: ASSET_NOT_FOUND
+              example:
+                code: ASSET_NOT_FOUND
+                message: Asset was not found.
+components:
+  securitySchemes:
+    CmmsJwtBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    CanonicalUuid:
+      type: string
+      format: uuid
+    AssetCreateRequest:
+      type: object
+      additionalProperties: true
+      required: [name]
+      allOf:
+        - not:
+            required: [tenant_id]
+        - not:
+            required: [company_id]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        equipment_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+    AssetResponse:
+      type: object
+      additionalProperties: true
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+        equipment_id:
+          anyOf:
+            - $ref: '#/components/schemas/CanonicalUuid'
+            - type: 'null'
+    IntegrationAssetResponse:
+      type: object
+      additionalProperties: true
+      required: [id, name, equipment_id]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+        equipment_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+    CmmsError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          minLength: 1
+        message:
+          type: string
+          minLength: 1
