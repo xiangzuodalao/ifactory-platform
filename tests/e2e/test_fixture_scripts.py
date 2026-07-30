@@ -253,6 +253,25 @@ def test_prepare_creates_an_atomic_read_only_fixture_tree(tmp_path: Path) -> Non
     assert not list((repo / ".runtime").glob("pdm-fixtures.*"))
 
 
+def test_prepare_succeeds_without_ripgrep(tmp_path: Path) -> None:
+    """Fixture preparation must not depend on an undeclared host tool."""
+    repo = _minimal_repo(tmp_path)
+    script = _copy_script(PREPARE, tmp_path)
+    fake_bin = _fake_bin(tmp_path)
+    unavailable_rg = fake_bin / "rg"
+    unavailable_rg.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'unexpected ripgrep dependency\\n' >&2\n"
+        "exit 127\n",
+        encoding="utf-8",
+    )
+    unavailable_rg.chmod(0o755)
+
+    result = _run(script, repo, fake_bin)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_prepare_refuses_symlinked_runtime_and_existing_fixture_tree(
     tmp_path: Path,
 ) -> None:

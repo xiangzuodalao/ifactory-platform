@@ -5,7 +5,7 @@ umask 077
 repo_root="$(git rev-parse --show-toplevel)"
 repo_root="$(realpath "$repo_root")"
 test "$(pwd -P)" = "$repo_root"
-rg -q '^\.runtime/$' .gitignore
+grep -Fqx '.runtime/' .gitignore
 test ! -L .runtime
 install -d -m 0700 .runtime
 test "$(realpath .runtime)" = "$repo_root/.runtime"
