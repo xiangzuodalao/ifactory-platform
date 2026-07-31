@@ -300,8 +300,9 @@ receipt 中的 `GATEWAY_ENABLED` 只能证明上一轮完成，不能授权本�
 
 1. 先把 gateway 切回 loopback-only，停止 Nginx，并证明 Docker host-gateway listener 已关闭；
 2. 停止前端和 API 用户服务；
-3. 执行 Compose `stop` 停止 MinIO 和 PostgreSQL；
-4. 保留数据卷、运行配置和状态记录。
+3. 显式停止离线 license guard service/timer 并证明 inactive；在线模式也要证明没有残留 guard；
+4. 执行 Compose `stop` 停止 MinIO 和 PostgreSQL；
+5. 保留数据卷、运行配置和状态记录。
 
 普通停止或重启流程禁止执行 `down -v`、`docker volume rm`、数据库清空或 MinIO 删除。需要重置隔离数据时必须另行设计可恢复目标核验和独立确认门。
 
@@ -316,7 +317,9 @@ receipt 中的 `GATEWAY_ENABLED` 只能证明上一轮完成，不能授权本�
 
 当前 CMMS 源码在离线文件缺失或不可读时会隐式回退到在线 key。为使离线模式不可回退，离线 API unit 必须启用 systemd IP 过滤：`IPAddressDeny=any`，只允许 `127.0.0.0/8` 与 `::1/128`，从 unit 层阻止任何 Keygen 或其他非 loopback 出站，同时保留对本机 PostgreSQL、MinIO 和 Nginx 的访问。preflight 必须用同一 user manager/profile 实测“loopback 可达、非 loopback 不可达”；若当前内核、cgroup 或用户级 systemd 不能强制该策略，离线严格模式不可用且 gateway 保持关闭，不能静默降级为在线模式。
 
-离线模式同时启用 `OnUnitActiveSec=30s`、`AccuracySec=1s` 的 license guard。guard 校验离线文件仍是预期 owner/type/link count/mode/size/SHA-256，并从 loopback 读取 `/api/license/state`；文件或状态异常、guard 自身失败时立即调用 fail-closed one-shot，且不重启 API。guard 也只允许 loopback 网络。离线 API unit 通过 `BindsTo=`/`After=` 绑定 guard timer：timer 被直接停止或失活会停止 API，并由 `ExecStopPost` 关闭 gateway；gateway 开放前还必须证明 timer 正在使用预期配置。该 profile 因此明确关闭 SMTP、SSO 或其他需要 API 主动访问外网的可选功能；未来需要这些能力时必须另行设计精确 egress allowlist，而不能放开 wildcard 出站。
+离线模式同时启用 `OnUnitActiveSec=30s`、`AccuracySec=1s` 的 license guard。guard 校验离线文件仍是预期 owner/type/link count/mode/size/SHA-256，并从 loopback 读取 `/api/license/state`；文件或状态异常、guard 自身失败时立即调用 fail-closed one-shot，且不重启 API。guard 也只允许 loopback 网络。离线 API unit 通过 `BindsTo=`/`After=` 绑定 guard timer：timer 被直接停止或失活会停止 API，并由 `ExecStopPost` 关闭 gateway。timer 反向声明 `PartOf=ifactory-cmms-api.service` 和 `StopWhenUnneeded=yes`，确保 API stop/restart/退出后 timer 也停止，不会成为下次 online 模式的残留进程；gateway 开放前必须证明 timer 正在使用预期配置。该 profile 因此明确关闭 SMTP、SSO 或其他需要 API 主动访问外网的可选功能；未来需要这些能力时必须另行设计精确 egress allowlist，而不能放开 wildcard 出站。
+
+offline/online 模式切换属于受控部署配置变更：先按 fail-closed 流程关闭 gateway 和 API，显式停止 guard service/timer 并证明 inactive，渲染目标 API unit profile 后执行 `daemon-reload`，再生成绑定新模式的一次性 start permit。切到 offline 时必须先启动并验证 guard/IP 过滤；切到 online 时必须证明不存在 active guard unit 和 offline IP profile。模式切换不能复用旧 permit、旧 mode/start receipt 或旧模式的预算判断；已有身份/bootstrap receipt 仍需通过正式 API 重新对账，但不重复身份写入。
 
 在线模式的受控 launcher 每次创建新 API 进程前，先在预算账本中写前计入一次尝试，再允许 systemd start；请求未发生或失败也不返还，以保持保守。受控新进程默认最多 10 次/日，至少保留另外 10 次给 12 小时缓存刷新、故障诊断和不可见的源码内部消耗。普通 `status`、已健康 MainPID 的幂等 `start` 和前端重启不计入；API `restart` 必须计入。
 
@@ -389,7 +392,8 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
    - API unit 固定 `Restart=no`；`ExecStartPre` 必须原子消费有效 permit 并复核 loopback-only 状态，`ExecStopPost` 覆盖 clean exit、失败、直接 stop/restart 和启动前失败，`OnFailure` 只作重复保险；前端 unit 才允许节流的 `Restart=on-failure`；
    - 无 permit、过期/复用 permit 和直接 `systemctl --user start/restart` 都不能创建 API MainPID，并保持或恢复 gateway 关闭；
    - 离线许可证只把受限 `LICENSE_FILE_PATH` 传给 API，强制 systemd profile 只允许 loopback；删除、替换、改权或破坏许可证文件时不能到达 Keygen，guard 按 `30s`/`1s` timer 配置触发 gateway 关闭；
-   - 离线 API 与 guard timer 的 `BindsTo=`/`After=` 生效；直接停止 timer 会停止 API 并触发 `ExecStopPost`，不能留下双地址 gateway 与失去 guard 的 API；
+   - 离线 API 与 guard timer 的 `BindsTo=`/`After=` 生效；timer 的 `PartOf=`/`StopWhenUnneeded=yes` 反向生效；停任一侧都不能留下双地址 gateway、失去 guard 的 API 或失去 API 的残留 timer；
+   - offline stop → online start 模式切换必须证明 guard inactive、offline IP profile 已移除并消费新模式 permit；残留 guard、旧 permit、旧 mode/start receipt 或旧模式预算状态全部 fail closed；
    - 在线许可证预算在进程创建前写前计入、每日最多 10 次；未知/耗尽预算和启动校验失败时 launcher 不创建、重启或重试 API；
    - 在线预算测试覆盖日期切换、账本损坏、进程启动失败、崩溃和长进程 12 小时缓存刷新预留，不把保守账本冒充 CMMS 内部实际计数；
    - 在线运行期测试记录 12 小时缓存过期/异常后的源码重校验限制，确认 entitlement 失败会阻断 Phase 2 readiness；不得把该模式宣称为无重试或严格 fail-closed；
@@ -458,7 +462,7 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
 - 前端修改可通过 HMR 生效；API 修改可快速构建和受控重启，公共入口不变。
 - API MainPID 只能由短时单次 permit 启动；任何退出都会执行 unit 级 fail-closed，直接 systemctl 操作不能绕过 gateway 对账门。
 - 未跟踪运行文件是唯一操作者管理的持久秘密来源；必要的 API 进程环境复制受本机可信边界约束，状态容器配置、日志和状态输出不泄露秘密值。
-- 许可证模式明确可审计：离线模式引用受限许可证文件、强制只允许 loopback 出站并运行 guard；在线模式显示保守日预算和运行期重校验限制，并在启动预算未知/耗尽或启动校验失败时保持 gateway 关闭。
+- 许可证模式明确可审计：离线模式引用受限许可证文件、强制只允许 loopback 出站并运行双向绑定的 guard；在线模式不存在残留 guard/IP profile，显示保守日预算和运行期重校验限制，并在启动预算未知/耗尽或启动校验失败时保持 gateway 关闭。
 - 验收模式能证明 CMMS SHA、有效的 `API_ACCESS`/`CUSTOM_ROLES` entitlements、公司计划的 `API_ACCESS`/`ROLE` features、强制邀请门、公司身份、最小权限 API Key 和零工单基线。
 - 停止、重启和失败恢复不会删除 CMMS 数据卷，也不会影响 ThingsBoard、PDM 或其他容器。
 - 在后续独立确认门之前，不执行 Phase 2 provisioning、Dashboard 发布、遥测注入、训练、Alarm 或工单写入。
