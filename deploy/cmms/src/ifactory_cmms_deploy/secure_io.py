@@ -205,9 +205,13 @@ def require_stable_stat(
         raise _unsafe_file()
 
 
-def read_bounded(fd: int, *, max_bytes: int) -> bytes:
+def _require_valid_max_bytes(max_bytes: int) -> None:
     if type(max_bytes) is not int or max_bytes < 0:
         raise _invalid_config()
+
+
+def read_bounded(fd: int, *, max_bytes: int) -> bytes:
+    _require_valid_max_bytes(max_bytes)
     chunks: list[bytes] = []
     remaining = max_bytes + 1
     try:
@@ -236,6 +240,7 @@ def read_secure_bytes(
     max_bytes: int,
     policy: RuntimePathPolicy,
 ) -> bytes:
+    _require_valid_max_bytes(max_bytes)
     canonical = policy.require_allowed_file(path)
     parent_fd, name = open_verified_parent(canonical, policy=policy)
     fd = -1
@@ -310,12 +315,15 @@ def _validate_replaced_file(
     parent_fd: int,
     name: str,
     expected: bytes,
+    expected_identity: tuple[int, int],
 ) -> None:
     fd = -1
     try:
         fd = os.open(name, _READ_FLAGS, dir_fd=parent_fd)
         before = os.fstat(fd)
         require_private_regular_file(before, expected_uid=os.getuid())
+        if (before.st_dev, before.st_ino) != expected_identity:
+            raise _unsafe_file()
         data = read_bounded(fd, max_bytes=len(expected))
         after = os.fstat(fd)
         require_stable_stat(before, after, actual_size=len(data))
@@ -375,8 +383,11 @@ def atomic_write_private(
         )
         _write_all(temporary_fd, data)
         os.fsync(temporary_fd)
-        os.close(temporary_fd)
-        temporary_fd = -1
+        temporary_metadata = os.fstat(temporary_fd)
+        temporary_identity = (
+            temporary_metadata.st_dev,
+            temporary_metadata.st_ino,
+        )
 
         if replace:
             os.replace(
@@ -393,7 +404,12 @@ def atomic_write_private(
             )
         temporary_exists = False
         os.fsync(parent_fd)
-        _validate_replaced_file(parent_fd, name, data)
+        _validate_replaced_file(
+            parent_fd,
+            name,
+            data,
+            temporary_identity,
+        )
     except DeploymentError:
         raise
     except OSError:

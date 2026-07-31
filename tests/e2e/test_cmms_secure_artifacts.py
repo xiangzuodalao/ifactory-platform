@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import json
 import os
+import signal
 import stat
 import sys
 import time
@@ -12,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from ifactory_cmms_deploy import process as secure_process
 from ifactory_cmms_deploy import secure_io
+from ifactory_cmms_deploy.cli import main
 from ifactory_cmms_deploy.errors import DeploymentError
 from ifactory_cmms_deploy.process import CommandResult, CommandRunner, CommandSpec
 from ifactory_cmms_deploy.secure_io import (
@@ -21,6 +26,7 @@ from ifactory_cmms_deploy.secure_io import (
     atomic_write_private,
     read_secure_bytes,
 )
+from e2e.support import SafeRuntimeFixture
 
 
 SENTINEL_SECRET = "cmms-sentinel-secret-7f4d2a"
@@ -39,6 +45,33 @@ def test_secure_reader_accepts_current_uid_private_regular_file(
     policy = RuntimePathPolicy.for_test(tmp_path, allowed_files={artifact})
 
     assert read_secure_bytes(artifact, max_bytes=64, policy=policy) == b"private-value"
+
+
+@pytest.mark.parametrize(
+    "invalid_limit",
+    [
+        pytest.param(True, id="bool"),
+        pytest.param(-1, id="negative"),
+        pytest.param(1.0, id="float"),
+        pytest.param("64", id="string"),
+    ],
+)
+def test_secure_reader_rejects_invalid_max_bytes_before_opening_any_path(
+    tmp_path: Path,
+    invalid_limit: object,
+) -> None:
+    artifact = tmp_path / "missing-parent" / "artifact"
+    policy = RuntimePathPolicy.for_test(tmp_path, allowed_files={artifact})
+
+    with pytest.raises(DeploymentError) as caught:
+        read_secure_bytes(
+            artifact,
+            max_bytes=invalid_limit,  # type: ignore[arg-type]
+            policy=policy,
+        )
+
+    assert caught.value.code == "CMMS-E002"
+    assert not artifact.parent.exists()
 
 
 def test_secure_snapshot_holds_and_closes_the_verified_descriptor(
@@ -135,18 +168,59 @@ def test_secure_reader_rejects_invalid_or_over_limit_content(
         assert decoded not in caught.value.safe_message
 
 
-def test_secure_reader_rejects_short_read_mutation(
+@pytest.mark.parametrize("mutation", ["truncate", "same-size-overwrite"])
+def test_secure_reader_rejects_real_descriptor_metadata_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
 ) -> None:
-    artifact = _private_file(tmp_path / "artifact")
+    original = b"private-value"
+    artifact = _private_file(tmp_path / "artifact", original)
     policy = RuntimePathPolicy.for_test(tmp_path, allowed_files={artifact})
-    monkeypatch.setattr(secure_io.os, "read", lambda _fd, _size: b"")
+    original_metadata = artifact.stat()
+    real_read = secure_io.os.read
+    mutated = False
+
+    def mutate_real_inode_then_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            writer = os.open(artifact, os.O_WRONLY | os.O_NOFOLLOW)
+            try:
+                if mutation == "truncate":
+                    os.ftruncate(writer, len(original) - 1)
+                else:
+                    assert os.pwrite(writer, b"changed-value", 0) == len(original)
+                os.fsync(writer)
+            finally:
+                os.close(writer)
+            if mutation == "same-size-overwrite":
+                os.utime(
+                    artifact,
+                    ns=(
+                        original_metadata.st_atime_ns,
+                        original_metadata.st_mtime_ns + 1_000_000_000,
+                    ),
+                    follow_symlinks=False,
+                )
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(
+        secure_io.os,
+        "read",
+        mutate_real_inode_then_read,
+    )
 
     with pytest.raises(DeploymentError) as caught:
         read_secure_bytes(artifact, max_bytes=64, policy=policy)
 
     assert caught.value.code == "CMMS-E001"
+    after = artifact.stat()
+    if mutation == "truncate":
+        assert after.st_size == len(original) - 1
+    else:
+        assert after.st_size == len(original)
+        assert after.st_mtime_ns != original_metadata.st_mtime_ns
 
 
 def test_secure_reader_rejects_symlink_in_parent_directory(tmp_path: Path) -> None:
@@ -290,6 +364,65 @@ def test_atomic_write_reopens_and_revalidates_the_renamed_target(
     assert "attacker-value" not in caught.value.safe_message
 
 
+def test_atomic_write_rejects_same_content_regular_inode_swap_after_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = _private_file(tmp_path / "state.json", b"old-value")
+    policy = RuntimePathPolicy.for_test(tmp_path, allowed_files={artifact})
+    expected = b"new-value"
+    real_replace = secure_io.os.replace
+
+    def replace_then_swap(
+        source: str,
+        destination: str,
+        *,
+        src_dir_fd: int,
+        dst_dir_fd: int,
+    ) -> None:
+        real_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+        attacker_name = ".same-content-attacker"
+        attacker_fd = os.open(
+            attacker_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dst_dir_fd,
+        )
+        try:
+            assert os.write(attacker_fd, expected) == len(expected)
+            os.fsync(attacker_fd)
+        finally:
+            os.close(attacker_fd)
+        real_replace(
+            attacker_name,
+            destination,
+            src_dir_fd=dst_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(secure_io.os, "replace", replace_then_swap)
+
+    with pytest.raises(DeploymentError) as caught:
+        atomic_write_private(
+            artifact,
+            expected,
+            replace=True,
+            policy=policy,
+        )
+
+    assert caught.value.code == "CMMS-E001"
+    assert artifact.read_bytes() == expected
+    metadata = artifact.stat()
+    assert stat.S_ISREG(metadata.st_mode)
+    assert stat.S_IMODE(metadata.st_mode) == 0o600
+    assert metadata.st_nlink == 1
+
+
 def test_atomic_write_does_not_create_a_missing_parent_chain(tmp_path: Path) -> None:
     artifact = tmp_path / "missing" / "state.json"
     policy = RuntimePathPolicy.for_test(tmp_path, allowed_files={artifact})
@@ -319,6 +452,56 @@ def test_command_specs_and_results_are_immutable(tmp_path: Path) -> None:
         spec.environment["PATH"] = "/unsafe"  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         result.returncode = 1  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "unsafe_relative",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(".", id="dot"),
+        pytest.param("..", id="dot-dot"),
+        pytest.param("../outside", id="parent-component"),
+        pytest.param("safe/../escape", id="nested-parent-component"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["directory", "file"])
+def test_safe_runtime_fixture_rejects_unsafe_lexical_paths_before_writing(
+    tmp_path: Path,
+    unsafe_relative: str,
+    operation: str,
+) -> None:
+    root = tmp_path / "runtime"
+    root.mkdir()
+    fixture = SafeRuntimeFixture(root)
+
+    with pytest.raises(ValueError, match="unsafe test fixture path"):
+        if operation == "directory":
+            fixture.private_directory(unsafe_relative)
+        else:
+            fixture.private_file(unsafe_relative, b"value")
+
+    assert list(tmp_path.iterdir()) == [root]
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["directory", "file"])
+def test_safe_runtime_fixture_rejects_absolute_paths_before_writing(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    root = tmp_path / "runtime"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    fixture = SafeRuntimeFixture(root)
+
+    with pytest.raises(ValueError, match="unsafe test fixture path"):
+        if operation == "directory":
+            fixture.private_directory(outside)
+        else:
+            fixture.private_file(outside, b"value")
+
+    assert not outside.exists()
+    assert list(root.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -464,6 +647,85 @@ def test_command_runner_kills_the_process_group_when_output_exceeds_a_cap(
     assert caught.value.exit_code == 5
 
 
+def test_command_runner_kills_a_same_group_grandchild_holding_a_kernel_lock(
+    tmp_path: Path,
+) -> None:
+    lock_file = tmp_path / "grandchild.lock"
+    ready_file = tmp_path / "grandchild-ready.json"
+    grandchild_program = (
+        "import fcntl,json,os,sys,time; "
+        "lock_file,ready_file,root_pid=sys.argv[1:]; "
+        "lock_fd=os.open(lock_file,os.O_RDWR|os.O_CREAT,0o600); "
+        "fcntl.flock(lock_fd,fcntl.LOCK_EX); "
+        "payload=json.dumps({'root_pid':int(root_pid),'parent_pid':os.getppid(),"
+        "'pid':os.getpid(),'pgid':os.getpgid(0)}).encode(); "
+        "temporary=ready_file+'.tmp'; "
+        "ready_fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); "
+        "os.write(ready_fd,payload); os.fsync(ready_fd); os.close(ready_fd); "
+        "os.replace(temporary,ready_file); time.sleep(10)"
+    )
+    child_program = (
+        "import subprocess,sys; "
+        "subprocess.Popen([sys.executable,'-c',sys.argv[1],"
+        "*sys.argv[2:]]).wait()"
+    )
+    root_program = (
+        "import os,subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2],"
+        "sys.argv[3],sys.argv[4],str(os.getpid())]); "
+        "deadline=time.monotonic()+5; "
+        "\nwhile not os.path.exists(sys.argv[4]):\n"
+        "  assert time.monotonic()<deadline\n"
+        "  time.sleep(0.005)\n"
+        "sys.stdout.buffer.write(b'x'*65); sys.stdout.flush(); time.sleep(10)"
+    )
+    spec = CommandSpec(
+        argv=(
+            sys.executable,
+            "-c",
+            root_program,
+            child_program,
+            grandchild_program,
+            str(lock_file),
+            str(ready_file),
+        ),
+        cwd=tmp_path,
+        environment={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=6,
+        stdout_limit=64,
+        stderr_limit=4096,
+        safe_label="grandchild process group probe",
+    )
+
+    with pytest.raises(DeploymentError) as caught:
+        CommandRunner().run(spec)
+
+    assert caught.value.code == "CMMS-E005"
+    identities = json.loads(ready_file.read_text(encoding="utf-8"))
+    assert identities["root_pid"] == identities["pgid"]
+    assert identities["parent_pid"] not in {
+        identities["root_pid"],
+        identities["pid"],
+    }
+    assert identities["pid"] != identities["root_pid"]
+
+    lock_descriptor = os.open(lock_file, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                fcntl.flock(
+                    lock_descriptor,
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+                break
+            except BlockingIOError:
+                assert time.monotonic() < deadline
+                time.sleep(0.005)
+    finally:
+        os.close(lock_descriptor)
+
+
 def test_command_runner_kills_the_process_group_at_the_deadline(
     tmp_path: Path,
 ) -> None:
@@ -505,6 +767,77 @@ def test_command_runner_keeps_the_deadline_after_child_closes_both_pipes(
 
     assert caught.value.code == "CMMS-E005"
     assert elapsed < 0.3
+
+
+def test_command_runner_cleans_up_after_operational_selector_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    real_popen = secure_process.subprocess.Popen
+    real_selector_factory = secure_process.selectors.DefaultSelector
+    spawned: list[secure_process.subprocess.Popen[bytes]] = []
+
+    def recording_popen(*args: object, **kwargs: object) -> object:
+        child = real_popen(*args, **kwargs)
+        spawned.append(child)
+        return child
+
+    class FailingSelector:
+        def __init__(self) -> None:
+            self._selector = real_selector_factory()
+
+        def register(self, *args: object, **kwargs: object) -> object:
+            return self._selector.register(*args, **kwargs)
+
+        def unregister(self, *args: object, **kwargs: object) -> object:
+            return self._selector.unregister(*args, **kwargs)
+
+        def get_map(self) -> object:
+            return self._selector.get_map()
+
+        def select(self, _timeout: float | None = None) -> object:
+            raise OSError(f"{SENTINEL_SECRET} /unsafe/selector")
+
+        def close(self) -> None:
+            self._selector.close()
+
+    monkeypatch.setattr(secure_process.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(
+        secure_process.selectors,
+        "DefaultSelector",
+        FailingSelector,
+    )
+    spec = CommandSpec(
+        argv=(sys.executable, "-c", "import time; time.sleep(10)"),
+        cwd=tmp_path,
+        environment={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=5,
+        stdout_limit=64,
+        stderr_limit=64,
+        safe_label="selector failure probe",
+    )
+
+    try:
+        with pytest.raises(DeploymentError) as caught:
+            CommandRunner().run(spec)
+
+        assert caught.value.code == "CMMS-E005"
+        assert SENTINEL_SECRET not in str(caught.value)
+        assert "/unsafe/selector" not in str(caught.value)
+        assert SENTINEL_SECRET not in caplog.text
+        assert len(spawned) == 1
+        child = spawned[0]
+        assert child.poll() is not None
+        assert all(
+            stream is None or stream.closed
+            for stream in (child.stdin, child.stdout, child.stderr)
+        )
+    finally:
+        for child in spawned:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait(timeout=5)
 
 
 def test_failed_command_does_not_expose_output_or_secret_diagnostics(
@@ -555,3 +888,14 @@ def test_command_runner_writes_bounded_input_without_inheriting_stdin(
 
     assert result.stdout == "bounded-input"
     assert result.stderr == ""
+
+
+def test_cli_unknown_option_returns_stable_unavailable_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["--unknown-control-option"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 20
+    assert captured.out == ""
+    assert captured.err == "CMMS-E020 command-not-available\n"

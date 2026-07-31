@@ -18,8 +18,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
-    arguments, _unknown = parser.parse_known_args(argv)
-    if arguments.command is None:
+    arguments, unknown = parser.parse_known_args(argv)
+    if arguments.command is None and not unknown:
         parser.print_help()
         return 0
     print("CMMS-E020 command-not-available", file=sys.stderr)

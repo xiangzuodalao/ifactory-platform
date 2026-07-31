@@ -198,6 +198,18 @@ def _close_process_streams(process: subprocess.Popen[bytes]) -> None:
                 pass
 
 
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _close_process_streams(process)
+
+
 class CommandRunner:
     def run(self, spec: CommandSpec) -> CommandResult:
         _validate_spec(spec)
@@ -235,16 +247,10 @@ class CommandRunner:
             ProcessDeadlineExceeded,
             ProcessOutputLimitExceeded,
             subprocess.TimeoutExpired,
+            OSError,
+            ValueError,
         ):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            _close_process_streams(process)
+            _terminate_process_group(process)
             raise DeploymentError(
                 "CMMS-E005",
                 f"{spec.safe_label} did not complete safely",

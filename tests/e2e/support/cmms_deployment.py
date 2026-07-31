@@ -13,15 +13,32 @@ from typing import Any, Collection
 class SafeRuntimeFixture:
     root: Path
 
+    def _safe_path(self, relative: str | Path) -> Path:
+        raw = os.fspath(relative)
+        components = raw.split(os.sep)
+        candidate = Path(raw)
+        if (
+            not raw
+            or candidate.is_absolute()
+            or any(component in {"", ".", ".."} for component in components)
+        ):
+            raise ValueError("unsafe test fixture path")
+        root = Path(os.path.abspath(self.root))
+        path = Path(os.path.abspath(root / candidate))
+        if path == root or not path.is_relative_to(root):
+            raise ValueError("unsafe test fixture path")
+        return path
+
     def private_directory(self, relative: str | Path) -> Path:
-        path = self.root / relative
+        path = self._safe_path(relative)
         path.mkdir(parents=True, mode=0o700, exist_ok=True)
         path.chmod(0o700)
         return path
 
     def private_file(self, relative: str | Path, data: bytes) -> Path:
-        path = self.root / relative
-        self.private_directory(path.parent.relative_to(self.root))
+        path = self._safe_path(relative)
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        path.parent.chmod(0o700)
         path.write_bytes(data)
         path.chmod(0o600)
         return path
