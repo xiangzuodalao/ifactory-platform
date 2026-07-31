@@ -202,17 +202,39 @@ systemd unit 使用这些工具的绝对路径。若 bootstrap 尚未获准、�
 └── toolchains/
 ```
 
-`cmms-development.env` 必须是当前用户拥有、单链接、非符号链接的普通文件，权限为 `0600`。它只包含 API/基础设施非秘密配置和 `.runtime/secrets/` 下精确 secret file 的绝对引用：
+`cmms-development.env` 必须是当前用户拥有、单链接、非符号链接的普通文件，权限为 `0600`。它的键集合精确为：
 
-- PostgreSQL 用户、数据库名和密码文件引用；
-- MinIO 用户/密码文件引用；
-- JWT 密钥文件引用；
-- Atlas 许可证密钥文件引用、可选的合法离线许可证文件路径，以及许可证要求的 fingerprint 配置；
-- 计划中的唯一隔离管理员标识，用于 `ALLOWED_ORGANIZATION_ADMINS` 限制首次注册；
-- 固定启用 `INVITATION_VIA_EMAIL=true`，使带角色的注册必须命中正式邀请记录；固定关闭 `ENABLE_EMAIL_NOTIFICATIONS=false`，本地 bootstrap 只创建邀请记录，不发送邮件；
-- API 所需的其他关闭或空置的本地集成功能配置。
+```text
+LICENSE_MODE
+POSTGRES_USER
+POSTGRES_DB
+POSTGRES_PASSWORD_FILE
+MINIO_ROOT_USER_FILE
+MINIO_ROOT_PASSWORD_FILE
+JWT_SECRET_KEY_FILE
+LICENSE_KEY_FILE
+LICENSE_FILE_PATH
+ALLOWED_ORGANIZATION_ADMINS
+```
 
-`cmms-bootstrap.env` 具有相同的所有者、文件类型和 `0600` 约束，只保存隔离管理员/运行用户 email、角色/API Key 标签等非秘密身份计划，以及以下三组 bootstrap credential slot 的绝对引用：
+每个键只出现一次。`LICENSE_MODE` 只允许 `offline`/`online` 并与 CLI 和计划模式一致；`POSTGRES_DB` 固定为 `atlas`，`POSTGRES_USER` 只允许小写 ASCII PostgreSQL 标识。五个必需 secret 引用和 offline 模式的 `LICENSE_FILE_PATH` 必须是 `.runtime/secrets/` 下的规范绝对路径；online 模式仍保留 `LICENSE_FILE_PATH` 键但值必须为空。`ALLOWED_ORGANIZATION_ADMINS` 只允许一个规范 email，不允许逗号列表。Fingerprint、邀请、邮件、SSO、LDAP、CORS、rate-limit、MinIO 公共配置和时区都是代码中的冻结字段，不允许 env 覆盖。
+
+`cmms-bootstrap.env` 具有相同的所有者、文件类型和 `0600` 约束，键集合精确为：
+
+```text
+ORGANIZATION_ADMIN_EMAIL
+RUNTIME_USER_EMAIL
+ROLE_EXTERNAL_ID
+API_KEY_LABEL
+SUPER_ADMIN_CURRENT_PASSWORD_FILE
+SUPER_ADMIN_CANDIDATE_PASSWORD_FILE
+ORGANIZATION_ADMIN_CURRENT_PASSWORD_FILE
+ORGANIZATION_ADMIN_CANDIDATE_PASSWORD_FILE
+RUNTIME_USER_CURRENT_PASSWORD_FILE
+RUNTIME_USER_CANDIDATE_PASSWORD_FILE
+```
+
+每个键只出现一次；空 current/candidate 值表示配置级 `null`，非空值必须是 `.runtime/secrets/` 下的规范绝对路径。超级管理员 email 固定为 `superadmin@test.com`，不能由 env 覆盖；组织管理员 email 必须与 runtime env 的唯一管理员完全一致，三个最终身份必须两两不同且 email 已经是去空格的 ASCII 小写规范形式。`ROLE_EXTERNAL_ID` 和 `API_KEY_LABEL` 都固定为 `ifactory-pdm-runtime`。动作相关的 plan validator 再决定某个 current/candidate 是否必须存在。该文件只保存非秘密身份计划和以下三组 bootstrap credential slot 的引用：
 
 - 超级管理员密码的 `current` 与可选 `candidate`；
 - 隔离公司管理员密码的 `current` 与可选 `candidate`；
@@ -233,13 +255,42 @@ systemd unit 使用这些工具的绝对路径。若 bootstrap 尚未获准、�
 
 每个 secret file 都必须是当前用户拥有、单链接、非符号链接、限长的普通文件，权限为 `0600`。PostgreSQL 使用官方 `POSTGRES_PASSWORD_FILE`，MinIO 使用官方 `MINIO_ROOT_USER_FILE`/`MINIO_ROOT_PASSWORD_FILE`，使状态容器的 Docker 配置只出现 secret 路径而不是值。CMMS API 目前只接受普通环境变量，因此受控 API launcher 仅从已验证的数据库、MinIO、JWT 和许可证 key secret file 读取并导出到 API 进程环境，不读取 bootstrap 身份密码；若提供离线许可证文件，launcher 只把其受限绝对路径作为 `LICENSE_FILE_PATH` 传给 API，不把文件内容复制进环境。这意味着同一 Unix 用户或具有 Docker/调试权限的主体属于本地可信边界。设计承诺的是“运行文件是唯一操作者管理的持久秘密来源，日志、状态和 Docker 配置不复制秘密值”，而不是不现实的“秘密只存在于文件”。
 
-`cmms-frontend.env` 只包含同源 API URL、端口和非秘密 UI 开关，也使用 `0600`，以简化统一校验。
+`cmms-frontend.env` 也使用 `0600`，键值精确为
+`HOST=127.0.0.1`、`PORT=3001`、`API_URL=/api`，不允许额外 UI
+开关。`RuntimeConfig.load(root)` 同时严格加载 runtime 与 frontend
+文件；`BootstrapConfig.load(root)` 加载 bootstrap 文件并交叉核对组织管理员，
+所以不存在无人负责或回退到继承环境的配置文件。
 
 `cmms-development-state.json` 不保存秘密，只记录 Compose 项目名、期望 CMMS git SHA、实际启动 SHA、systemd MainPID/进程启动标识、解析后的 Docker host-gateway、启动时间和固定端口。状态文件不能替代 Git、运行进程和 API 验证。验收时必须把 unit MainPID、进程工作目录、启动记录、当前干净 SHA 与总仓 gitlink 重新交叉核对。
 
+State 首个 generation 固定为 `1`，后继必须精确为前一 generation 加一且
+`updated_at` 严格增加；比较 API 必须接收前一条记录，不能让一个孤立的高
+generation 自证有效。Git object ID 固定小写 hex40；dirty fingerprint、
+artifact/config/manifest/record SHA、volume identity、unit/gateway/guard
+generation 固定小写 hex64；budget debit ID 为 hex32，日期/更新时间分别是
+真实 `YYYY-MM-DD` 和固定六位小数 UTC。Compose project 固定
+`ifactory-cmms-dev`，volume 名固定
+`ifactory-cmms-dev_postgres_data`/`ifactory-cmms-dev_minio_data`；
+gateway address 是非 wildcard/loopback/multicast/link-local 的规范 IPv4。
+
+API PID/start-ticks、frontend PID/start-ticks 和最近 budget debit
+ID/sequence/date 分别成组为全 `null` 或全 present。Gateway `STOPPED`
+要求 address/SHA/generation 全 null，`LOOPBACK` 要求三者全 present，
+`DUAL` 还要求 API/frontend 两个进程对 present。Online guard 永远 null；
+offline guard 当且仅当 API 进程对 present。Budget anchor 的 nullability
+不随当前 license mode 改变：ledger SHA 为 null 时 latest 三元组全 null，
+代表从未建立；ledger SHA present 时 latest 三元组可全 null 或全 present。
+一旦任何 generation 建立 ledger anchor，后继 State、stop、补偿和
+online→offline 都不得清除；offline 只保留原 quartet，不新增 debit。
+`bootstrap_receipt_sha256=null` 只允许出现在 `UNINITIALIZED`；后续状态必须
+有 receipt，而 `UNINITIALIZED` 在首次远端写之前也可以已经指向包含 pending
+attempt 的 generation-1 receipt。Task 2 校验 exact scalar grammar 和这些
+闭合 nullability；具体 operation 可改变哪些字段、IPv4 是否仍属于本机 Docker
+bridge，由后续生命周期转换器和 live inspector 校验。
+
 bootstrap receipt 不覆盖写一个“当前文件”，而是在 `.runtime/receipts/cmms-bootstrap/` 中按规范内容 SHA-256 保存不可变 `0600` generation。`StateRecord.bootstrap_receipt_sha256` 是唯一 current 指针：先独占创建、fsync 并重开新 generation，再 CAS 更新 StateRecord，旧 generation 始终保留。崩溃发生在 CAS 前时旧指针仍可完整读取，新文件只是无授权 orphan；CAS 后则指向已完整持久化的新文件。恢复流程禁止按目录最新文件、mtime 或最大 generation 猜测 current，也不得让 orphan generation 推进 API Key 或身份状态。
 
-`cmms-license-online-budget.json` 是不含秘密、原子更新的保守预算账本，只在在线 license key 模式使用。它记录 API 进程使用的 `LocalDate`/时区、由受控 launcher 写前计入的新进程尝试数、每日上限和连续性标识；不声称等于 CMMS 内部 `KeygenRequestTracker`。离线许可证模式明确标记为不消耗该在线启动预算。
+`cmms-license-online-budget.json` 是不含秘密、原子更新的保守预算账本，只在在线 license key 模式创建或推进。它记录 API 进程使用的 `LocalDate`/时区、由受控 launcher 写前计入的新进程尝试数、每日上限和连续性标识；不声称等于 CMMS 内部 `KeygenRequestTracker`。切回离线后文件和 State anchor 作为不可回退的 durable history 保留，但离线模式不写入或消耗预算。
 
 `start-permits/` 只保存尚未消费且短时有效的 API start permit；控制脚本和 `ExecStartPre` 通过同一目录内原子 rename 实现单次消费。启动完成、失败或 permit 过期后必须清理精确 permit，不能把目录存在本身当作授权。
 
@@ -247,15 +298,157 @@ bootstrap receipt 不覆盖写一个“当前文件”，而是在 `.runtime/rec
 
 Phase 2 的 `.runtime/predictive-maintenance-shadow.env` 独立管理，只保存 CMMS API Key 的严格凭据 envelope；不得把 Atlas 许可证、管理员密码、数据库密码或 MinIO 密码复制进去。该 envelope 是 API Key 的预期持久运行副本，因此不受“基础设施 secret file”措辞混淆。
 
+所有 canonical record 先执行 exact keyset，再执行确定性的秘密字段规则；
+禁止用 `"key" in field_name` 之类宽泛匹配。非 ASCII 字段名直接拒绝；
+其余字段名转 ASCII 小写并把 `-` 换为 `_` 后，只拒绝 exact
+`password`/`passwd`/`token`/`secret`/`credential`/`authorization`/
+`cookie`/`set_cookie`/`api_key`/`raw_api_key`/`license_key`/
+`jwt_secret_key`/`private_key`/`client_secret`/`postgres_password`/
+`minio_root_user`/`minio_root_password`，以及后缀
+`*_password`/`*_passwd`/`*_token`/`*_secret`/`*_credential`/
+`*_authorization`/`*_cookie`/`*_private_key`/`*_raw_key`。合法的
+`api_key_id`、`api_key_label`、capture metadata、`revoked_api_key_ids`、
+`license_mode` 和 `license_guard_generation` 不得误伤。
+
+字符串值拒绝 `pls_change_me`、`cmms-test-secret://`、Basic/Bearer、
+PEM private-key 前缀以及 `X-Amz-*` credential/signature/security-token、
+`password=`/`token=`/`secret=`/`api_key=`/`license_key=` marker。这里不
+声称可用熵检测识别任意秘密；真正边界是 typed constructor 不接受 secret
+wrapper、bytes、认证 header/body、raw API Key 或 secret-file 内容。
+
 ## 启动、初始化与停止流程
 
 所有会启动、停止、重启或修复 CMMS 的命令都遵守同一个 fail-closed 不变量：除 lease 外仅用于消费 plan hash 的 application audit reservation 外，第一项 service-affecting/planned effect 必须把 Nginx 渲染或 reload 为 loopback-only，并证明 Docker host-gateway 的 `:3000` 不可达；后续任一 preflight、认证或资格检查失败都保持该状态。只有当前 API 完成全部对账后，最后一步才可开放双地址 listener。
+
+Claim 所需的 opaque `FailClosedEvidence` 只有一个生产 mint：内部 CLI
+composition root 从 Task 2 取得一组共享新鲜 object token 的私有 authority
+parts，只交给 Task 4 Gateway。它们维护带锁的一次性 challenge 状态
+`PENDING -> PROVED -> CONSUMED`。`begin` 把 confirmed
+plan/application/live lease、预期 gateway generation、loopback config SHA
+和精确 Docker-gateway IPv4 `:3000` 绑定到随机 hex32 challenge；只有 Task 4
+私有 exact-listener inspector 持有 proof mint，在重开加载配置并观察该地址
+listener count 为 0 后才能得到 token-authenticated proof。Evidence issuer
+再次核对同一 live plan/lease 和全部字段，原子消费 challenge 后才产生
+`FailClosedEvidence`；fake/cross-authority/跨 plan/application/lease、陈旧
+generation/SHA/address、非零 listener、proof/evidence 重放全部拒绝。
+
+Authority parts、内部 factory、challenge 和 proof 都不出现在包
+`__all__`/根导入面，构造/copy/pickle 要求 module-private token；Gateway
+从不返回它们，post-claim/emergency 路径没有 PRECLAIM challenge。这是可信
+包内 capability 边界，不声称 Python 能抵抗已经以 controller 用户执行的
+恶意 introspection。不得提供 boolean-only public mint、公开便利构造器、
+包级导出或生产 fixture 后门。
 
 每个静态 hash/规范字节/有效期均通过的 `apply`，先在 `.runtime/plans/cmms-development/{plan_sha256}.application.json` 独占创建并 fsync 一个 `ATTEMPTED` reservation；这是 apply-effect 锁之外唯一允许的追加式审计写，也使该 plan hash 从此不可重用。随后才通过已验证父目录安全打开或首次创建 `.runtime/cmms-development-apply.lock`，取得非阻塞进程级独占锁，并把该文件描述符保持到补偿和 application 终态都完成。该锁是所有 `apply` 的 effect single writer，不按 plan hash 分片；两个不同计划也不能并发。竞争失败只把 loser 自己的 reservation 改为 `CONTENDED`，必须在 gateway、HTTP、receipt、State 和服务动作前返回 busy。等待不会让原计划重新可用，操作者只能重新生成计划。
 
 `plan`、`status` 和 `secret` 不持有该 effect lease：`plan` 对 State/receipt/config/secret stat 做前后稳定性复核，`apply` 在每次使用 secret/env 时通过已持有描述符和 stat lineage 检测并发替换；这是 apply effect 的单写锁，不是整个 `.runtime` 的全局文件锁。安全性的 `emergency fail-closed` 是唯一服务动作例外，只能缩小网关暴露。进程崩溃会由操作系统释放锁，但 `ATTEMPTED`/`IN_PROGRESS` reservation 不会变成成功或失败；任何远端提交、receipt/State 锚定、补偿证明或终态写入不确定时保留非终态，并由新哈希 reconciliation plan 处理。
 
 ### 计划应用记录与动作验证
+
+`DeploymentPlan` v1 的顶层 wire schema 精确为：
+
+```text
+schema_version = 1
+record_type = cmms-deployment-plan
+plan_sha256
+plan_nonce
+created_at
+expires_at
+snapshot
+operation
+profile
+license_mode
+bootstrap_bindings
+actions
+```
+
+`plan_nonce` 是每次公共生成都重新产生的密码学随机 128-bit 小写十六进制值，时间使用固定六位小数 UTC，
+`expires_at` 精确等于 `created_at + 30 minutes`。`snapshot` 精确包含：
+
+```text
+source:
+  root_sha
+  root_dirty_fingerprint
+  root_status
+  cmms_gitlink
+  cmms_head
+  cmms_dirty_fingerprint
+  cmms_status
+config_sha256
+toolchain_manifest_sha256
+sensitive_manifest_sha256
+unit_generation
+state_generation
+state_sha256
+```
+
+State 不存在的唯一编码是 `state_generation=0`、
+`state_sha256=null`；存在时 generation 必须为正数且 SHA 为小写
+hex64。确认阶段重新打开当前 State，拒绝 absent/present 变化、generation
+变化或 canonical SHA 变化。不得为缺失 State 计算伪 hash，也不接受空字符串
+sentinel。
+
+`actions` 是非空规范数组，每行只有 `code`、`target_kind`、`target_id`，
+首行固定为无 target 的 `gateway.fail-closed`。计划不序列化 `branch` 或
+`plan_branch`。`bootstrap_bindings` 为 `null` 或精确包含：
+
+```text
+credentials
+invitation_probe
+api_key_capture
+api_key_cleanup
+role_external_id
+api_key_label
+phase2_env_logical_id
+phase2_env_file
+```
+
+其嵌套 keyset 分别冻结为：
+
+```text
+SecureFileStatBinding:
+  logical_file, dev, ino, size, mtime_ns, ctime_ns
+CredentialPlanBinding:
+  identity, canonical_email, current_file, candidate_file
+InvitationProbePlanBinding:
+  slot_id, canonical_email, descriptor_file, password_file
+ApiKeyCapturePlanBinding:
+  attempt_id, api_key_id, label, runtime_user_id, company_id, captured_file
+ApiKeyCleanupPlanBinding:
+  attempt_id, api_key_id, terminal_outcome, historical_captured_file,
+  observed_captured_file, phase2_env_file
+```
+
+除 cleanup-only repair 外，非空 bindings 的 `credentials` 固定按
+`super-admin`、`organization-admin`、`runtime-user` 三行排列。
+Cleanup-only 是唯一允许 `credentials=null` 的非空 bindings，并同时要求
+invitation/capture 为 `null`；它只从 State-selected receipt 和固定 Phase 2
+逻辑目标重建 stat，不加载 bootstrap env 或任何 credential/probe slot。
+Cleanup outcome 只允许 `PUBLISHED`/`REVOKED`，capture 与 cleanup 互斥。
+`PUBLISHED` 时 nested cleanup stat 是 State-selected receipt anchor，顶层
+Phase 2 stat 是当前重开观察，两者都非 null 且必须完全相等；`REVOKED` 时
+两者都为 null 且不打开 Phase 2 env。Role/API-Key 标识固定为
+`ifactory-pdm-runtime`，Phase 2 env 逻辑 ID 固定为
+`predictive-maintenance-shadow.env`。这些 stat 只包含逻辑 ID 和 inode
+元数据，不包含绝对路径、内容 digest 或秘密值。
+
+计划 choices 的 wire 值精确为：operation
+`bootstrap`/`start`/`restart-api`/`restart-frontend`/`stop`/`repair`/
+`switch-license`，profile `development`/`acceptance`，license
+`offline`/`online`；持久状态枚举使用 `STOPPED`/`LOOPBACK`/`DUAL`、
+`CLEAN`/`UNCOMMITTED` 和 application 的
+`ATTEMPTED`/`CONTENDED`/`REJECTED`/`IN_PROGRESS`/`SUCCEEDED`/`FAILED`，
+以及 bootstrap 的 `UNINITIALIZED`/`ADMIN_ROTATED`/`COMPANY_CREATED`/
+`ROLE_CREATED`/`INVITATION_CREATED`/`RUNTIME_IDENTITY_CREATED`/
+`API_KEY_CAPTURED`/`FINAL_PERMISSIONS_VERIFIED`/`GATEWAY_ENABLED`；不提供
+`UNKNOWN` fallback。BootstrapState 由 Task 2 的 StateRecord 契约定义，
+Task 8 只定义和执行转换表，不再发明第二个 wire enum。
+三个 credential identity 同样由 Task 2 的 `CredentialIdentity` 定义；
+Task 7 只消费它来实现 slot/认证协议，不定义第二个 `Identity`。
+
+`plan_sha256` 对删除该字段后的完整 canonical body 计算。计划只允许以
+调用方给定 plans 目录中的 `{plan_sha256}.json` 独占 `0600` 创建，不覆盖；
+loader 拒绝任意层级未知/缺失字段、非规范字节、文件名/hash/body 不一致。
 
 每个已消费的计划哈希对应一个固定 schema 的规范 `PlanApplicationRecord`：
 
@@ -425,9 +618,15 @@ gateway 开放前必须通过正式 API 证明计划中的公司、定制集成�
 
 offline/online 模式切换属于受控部署配置变更：先按 fail-closed 流程关闭 gateway 和 API，显式停止 guard service/timer 并证明 inactive，渲染目标 API unit profile 后执行 `daemon-reload`，再生成绑定新模式的一次性 start permit。切到 offline 时必须先启动并验证 guard/IP 过滤；切到 online 时必须证明不存在 active guard unit 和 offline IP profile。模式切换不能复用旧 permit、旧 mode/start receipt 或旧模式的预算判断；已有身份/bootstrap receipt 仍需通过正式 API 重新对账，但不重复身份写入。
 
-在线模式的受控 launcher 每次创建新 API 进程前，先在预算账本中写前计入一次尝试，再允许 systemd start；请求未发生或失败也不返还，以保持保守。受控新进程默认最多 10 次/日，至少保留另外 10 次给 12 小时缓存刷新、故障诊断和不可见的源码内部消耗。普通 `status`、已健康 MainPID 的幂等 `start` 和前端重启不计入；API `restart` 必须计入。
+Online→offline 不清除或重写既有 budget ledger/State anchor，只停止新增
+debit；后续 offline→online 必须重开并验证该 anchor 后才能 debit。唯一允许在
+既有 owned volume 上从零建立账本的情况，是当前 canonical offline State 在
+单调 no-clear 不变量下 quartet 全 null、账本路径也被证明不存在；任何 stray
+bytes 或历史/current anchor 都转入 `UNKNOWN`，不能借模式切换绕过 rollback。
 
-bootstrap/start plan 和脱敏状态输出必须显示 `offline`/`online` 模式、API 使用的日期/时区、本日受控尝试数、拟新增次数、10 次上限、保留余量，以及在线运行期重校验限制。账本缺失、损坏、日期连续性或启动来源无法证明时，预算状态为 `UNKNOWN`，不得自动创建新 API 进程；对于既有数据库，只能生成一次性、明确确认的恢复计划来消费一次未知预算，成功后当天仍按零剩余受控预算处理。全新且已证明为空的隔离卷可以从零初始化账本。由编排发起的启动校验失败必须保持 gateway 关闭，launcher 不自动重启或重试 API。编排不通过直连 CMMS 数据库读取或修改 `KeygenRequestTracker`。
+在线模式的受控 launcher 每次创建新 API 进程前，先在预算账本中写前计入一次尝试，再允许 systemd start；请求未发生或失败也不返还，以保持保守。受控新进程默认最多 10 次/日，至少保留另外 10 次给 12 小时缓存刷新、故障诊断和不可见的源码内部消耗。普通 `status`、已健康 MainPID 的幂等 `start` 和前端重启不计入；API `restart` 必须计入。离线模式不新增 debit，但必须保留既有账本和 State anchor。
+
+bootstrap/start plan 和脱敏状态输出必须显示 `offline`/`online` 模式、API 使用的日期/时区、本日受控尝试数、拟新增次数、10 次上限、保留余量，以及在线运行期重校验限制。除上述“canonical offline State quartet 全 null 且账本路径不存在”的 never-established switch 外，账本缺失、损坏、日期连续性或启动来源无法证明时，预算状态为 `UNKNOWN`，不得自动创建新 API 进程；对于既有数据库，只能生成一次性、明确确认的恢复计划来消费一次未知预算，成功后当天仍按零剩余受控预算处理。全新且已证明为空的隔离卷也可以从零初始化账本。由编排发起的启动校验失败必须保持 gateway 关闭，launcher 不自动重启或重试 API。编排不通过直连 CMMS 数据库读取或修改 `KeygenRequestTracker`。
 
 gateway 已开放后，在线模式的 12 小时缓存重校验由当前 CMMS 业务请求触发；网络异常时，源码可能在后续请求再次访问 Keygen，预算账本无法观测或阻止。此时 CMMS 自身仍会把许可证状态判为无效并通过 entitlement 检查拒绝受限能力，Phase 2 readiness 必须失败，但编排不承诺立即关闭 gateway 或阻止源码内部重试。需要无在线依赖、严格可预测重启与运行期行为时必须选择离线文件模式；改变在线负缓存/健康信号属于未来 CMMS 业务代码设计，不在本次部署范围内。
 
