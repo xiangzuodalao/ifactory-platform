@@ -285,7 +285,9 @@ safe_result_codes
 | `SUCCEEDED` | 3 | 必填 | 必填 | `APPLY_SUCCEEDED` |
 | `FAILED` | 3 | 必填 | 必填 | `APPLY_FAILED` |
 
-`safe_result_codes` 是有序、去重的稳定代码列表，最多 32 项；每项必须匹配 `[A-Z][A-Z0-9_.-]{0,63}`，并且是控制面定义的枚举值。不允许路径、PID、异常文本、堆栈或上游响应。每次转换都必须原子替换、fsync、重开并核对前一 generation；终态不可再次转换。`REJECTED` 只表示取得 effect lease 后、第一次 service effect 前已经确定的 snapshot、binding 或 confirmation 拒绝。只有在补偿结果和终态持久化均可证明时才能写 `FAILED`；不确定的 fail-close、远端提交、补偿或终态写入继续保留 `ATTEMPTED` 或 `IN_PROGRESS`。
+`safe_result_codes` 是有序、去重的稳定代码列表，最多 32 项；每项必须匹配 `[A-Z][A-Z0-9_.-]{0,63}`，并且是控制面定义的枚举值。不允许路径、PID、异常文本、堆栈或上游响应。v1 的 transition 根据目标状态自动写入唯一 primary code，调用者不能传入 primary 或任意字符串；当前没有 secondary code，详细操作/补偿代码只保留在内存结果和脱敏 CLI 输出中。未来增加 secondary 必须先扩展中心枚举和严格转换测试。
+
+每次转换都必须原子替换、fsync、重开并核对前一 generation；终态不可再次转换。`REJECTED` 只表示取得 effect lease 后、第一次 service effect 前已经确定的 snapshot、binding 或 confirmation 拒绝。只有在补偿结果和终态持久化均可证明时才能写 `FAILED`；不确定的 fail-close、远端提交、补偿或终态写入继续保留 `ATTEMPTED` 或 `IN_PROGRESS`。
 
 动作验证采用单一 action tuple、分层验证，不在计划中增加另一个 `PlanBranch` 真相源：
 
@@ -294,9 +296,19 @@ safe_result_codes
 - 生命周期规划器根据一个稳定的 `PlanningAssessment` 唯一生成规范 action tuple；调用者不能直接指定分支或任意 actions。
 - apply-time preflight 在 fail-close 和 claim 后，以零 HTTP 方式重新生成同一 assessment 和 tuple，并逐项精确比较 actions、targets、profile/license 与 bootstrap bindings；它不能补充、删除或重排动作。
 
-注册表可在内部把 tuple 分类为 active/stopped start、discovery repair、bootstrap mutation repair、budget recovery repair 或 capture-cleanup repair，但分类值不导出、不序列化。所谓“唯一 action tuple”是指同一个 `PlanningAssessment` 只能生成一个 tuple，而不是每个 operation 在所有运行状态下只有一组固定动作。结构性错误由注册表和 `DeploymentPlan.create` 拒绝；active/stopped、卷状态、当前 receipt 和其他运行上下文的选择由规划器决定，并由 preflight 精确重放。
+注册表可在内部把 tuple 分类为 active/stopped start、discovery repair、bootstrap repair、budget recovery repair 或 capture-cleanup repair，但分类值不导出、不序列化。所谓“唯一 action tuple”是指同一个 `PlanningAssessment` 只能生成一个 tuple，而不是每个 operation 在所有运行状态下只有一组固定动作。结构性错误由注册表和 `DeploymentPlan.create` 拒绝；active/stopped、卷状态、当前 receipt 和其他运行上下文的选择由规划器决定，并由 preflight 精确重放。
 
-验收 profile 的 repair 只有在 Phase 2 seed receipt 缺失、动作投影后的 bootstrap 状态达到 `FINAL_PERMISSIONS_VERIFIED`，并且 tuple 包含完整 pre-open、dual enable 和 post-open 验证时，才可生成验收回执。Discovery、budget recovery 和 capture-cleanup repair 永不生成验收回执；readiness adapter 只能执行计划中已有的 MinIO probe action，不能自行添加。
+规范顺序由实施计划中一张冻结的全局 action rank 和逐分支 cardinality 表定义，不通过任意拓扑排序推断；同 code 的多 target 行按 `(target_kind,target_id)` ASCII 次序排列。规划器只把 assessment 中精确标为 `SATISFIABLE_BY_ACTION` 且属于该分支 allowlist 的 finding 合并进必选集合，再按该 rank 排序，因此没有可由调用者选择的“可选顺序”。
+
+bootstrap repair 内部再分成四个互斥子语法：按显式 receipt/probe/slot 映射选择并以 Phase 2 publish 结束的连续 bootstrap completion 后缀；发布与 capture cleanup 已完整锚定后只恢复 composite readiness/dual/acceptance 的 readiness-only；精确 ID 的 revoke-only；精确 identity target 的 candidate-discard-only。Readiness-only 不含任何 bootstrap/repair mutation；revoke/discard 不能和 create/publish 混在同一计划。Discovery、revoke-only 和 discard-only 在写入并 State-select 自己的 receipt generation 后，必须执行计划中显式的 `repair.stop-loopback-runtime`，证明 API/frontend/guard/timer 停止并清除 State 进程标识；后续 mutation 必须重新生成 stopped-state 计划，不能复用仍活动的 PID 或 permit。
+
+invitation probe 和 Phase 2 publish 都不推进 `BootstrapState`，所以 completion 后缀不能只按“下一状态”推导。Task 8 从 State-selected receipt 的 action-attempt 行派生 `NOT_ATTEMPTED`、`PENDING_OR_UNCERTAIN`、`ENFORCED`、`UNKNOWN_NO_USER` 或 `UNEXPECTED_USER_OR_INVALID`，Task 9 在 plan/preflight 入口按冻结映射选择且不在同一 apply 内重分类：`ROLE_CREATED + NOT_ATTEMPTED + unused slot` 或单条 terminal `UNKNOWN_NO_USER + distinct new slot` 从 probe 开始；`ROLE_CREATED + ENFORCED + no slot` 从 invitation 开始；pending/uncertain 必须绑定旧 slot 进入 discovery-only；后续状态只允许 terminal `ENFORCED` 且不再绑定 slot。追加历史的唯一例外是“第一条 terminal UNKNOWN_NO_USER 后，由后续已确认计划绑定不同 slot 的第二条 attempt”；第二条存在后只取它作为 effective disposition，第一条只证明 distinctness；第二次 UNKNOWN 耗尽重试且不允许第三条。异常用户、两条 pending、交错/重用 target、第三条 attempt 或 state/result 不一致全部阻断，不能回退到通用 next-state 规则。
+
+readiness-only 只允许 proven-stopped 的 `REPAIR`，且 State 指针必须精确选中 `FINAL_PERMISSIONS_VERIFIED` 或 `GATEWAY_ENABLED` receipt，并独立绑定当前 State generation/SHA 与 receipt 的 `last_plan_sha256`；普通 stop 可以更新 State 的 last-plan transition，不能伪造或抹除 receipt 所指的历史 bootstrap application。该 receipt 必须证明 invitation probe `ENFORCED`、Phase 2 `PUBLISHED`、anchored capture 已清理且路径持续不存在、当前 Phase 2 env stat 精确匹配、没有 pending/uncertain attempt 或 cleanup/discovery/revoke/discard 目标，并且仍存在“未到 `GATEWAY_ENABLED`、receipt 的 `last_plan_sha256` 所指 application 非终态、或 eligible acceptance receipt 缺失”之一的 completion gap。Capture cleanup pending 时必须先执行固定 cleanup-only plan，再生成新 readiness-only plan；已经健康且终态一致时拒绝 repair，使用普通 status/start。
+
+bootstrap/repair 写入前的 `readiness.require-api-loopback` 与写入后的 composite `readiness.require-loopback` 是两个不同动作。前者只证明当前 API PID/启动标识、socket、固定 loopback health、网关 generation 和 license barrier，不认证、不读取 company/user/role/API Key；后者在计划中的 bootstrap mutations 完成后执行完整 pre-open 对账。二者不可互相替代。
+
+验收 profile 的 fresh bootstrap、bootstrap-mutation completion 或满足上述 completed-publication 谓词的 readiness-only repair，只有在 Phase 2 seed receipt 缺失、State-selected/动作投影后的 bootstrap 状态为 `FINAL_PERMISSIONS_VERIFIED` 或 `GATEWAY_ENABLED`，并且 tuple 包含完整 composite pre-open、dual enable、post-open 和恰好一个 MinIO probe 时，才可生成验收回执。不满足谓词的 acceptance bootstrap 直接拒绝，而不是降级为 operational。Development bootstrap、discovery、revoke-only、discard-only、budget recovery 和 capture-cleanup repair 永不生成验收回执；readiness adapter 只按已确认 plan 中的 operation/profile/probe presence 分类并执行已有 probe，不能自行读取 planning-only 字段或添加动作。
 
 Capture-cleanup repair 的唯一 plan-visible tuple 是：
 
@@ -360,6 +372,8 @@ receipt 中的 `GATEWAY_ENABLED` 只能证明上一轮完成，不能授权本�
 
 这些是 CMMS 自己拥有的初始化、维护和审计写入，不授权编排脚本直连数据库。日常编排本身禁止 signup、邀请、角色创建/修改、密码轮换、API Key 创建/吊销或领域对象写入。当前 `ApplicationInitializer` 在超级管理员公司用户为空时可能在普通启动中重建默认密码用户；在不直连数据库且不修改 CMMS 业务代码的边界下，控制面无法在 Java 启动前阻止这一内部写入。它必须作为源码残余风险处理：启动后若 receipt 绑定的用户 ID/凭据失配或默认凭据重新有效，立即关闭 gateway 并停止宿主机服务，保留证据并要求独立安全修复，绝不开放双地址 listener 或把它算作成功日常启动。
 
+Fresh bootstrap 的 `cmms.initialize-fresh-database` action 是对该启动副作用的显式授权与事后验证，不是第二个初始化器：`process.start-api` 在启动前要求该行已存在，API 返回后才按 rank dispatch 该行核对源码定义的初始化结果，且不得再次写入。验证必须在 frontend 启动和 API-loopback readiness 之前完成。
+
 gateway 开放前必须通过正式 API 证明计划中的公司、定制集成角色、用户和 API Key 仍保持精确身份与权限；在受控重启测试中还要证明资产和工单集合未被启动流程改变。实现必须维护一份跟踪的“启动副作用敏感文件”清单，至少覆盖 migration、`ApplicationInitializer`、许可证与认证过滤器及其直接写入依赖；这些文件有未审查变化时，API 最多以 loopback-only 运行供诊断，gateway 保持关闭。其他业务代码的 dirty 修改仍可在开发模式热迭代，但继续标记 `UNCOMMITTED`，不能生成验收回执。receipt 缺失、状态不一致或认证/读取对账失败时，不得把日常启动隐式升级为 bootstrap；流程停止并生成修复计划。
 
 ### 部分失败修复
@@ -383,6 +397,8 @@ gateway 开放前必须通过正式 API 证明计划中的公司、定制集成�
 若补偿已经停止 API，且 receipt 中还没有后续删除/吊销所需的精确 live target ID，修复计划不得按标签猜测目标。此时只能先生成并独立确认一个 discovery-only repair：恢复既有 API 到 loopback-only、使用显式 current/candidate slot 做正式只读对账、把安全 live ID 与证据绑定到该计划回执，然后在任何 CMMS 写入和双地址 gateway 之前停止。操作者必须再次生成并确认含精确目标的新 repair plan，才能执行删除、吊销或重建。
 
 未受邀 signup probe 的响应丢失也遵循两阶段修复。原 apply 保留旧 slot 且不重发；discovery-only repair 必须把 receipt 指定的旧 descriptor/password 精确绑定进计划，只做认证与 email 查询。再次证明零用户时只把旧 attempt 终结为“未知但未创建”、清理该 owned slot，不能据此宣称邀请门已验证；下一份新哈希计划才可绑定不同 email/slot 再做一次负测。发现用户或结果不确定时继续保留旧 slot，转入独立清理设计。
+
+若 Phase 2 publish 与 capture cleanup 已经 receipt-first/State-anchor 完成，但进程在 composite readiness、dual enable、`GATEWAY_ENABLED`、验收回执或 application terminal 之前中断，则不得再次 publish。若 capture cleanup 尚未完成，先独立确认并执行固定两行动作的 cleanup-only plan；随后从 proven-stopped 状态生成 readiness-only repair。该计划只包含许可证/permit/API/frontend 启动、API-loopback、正式只读对账、composite pre-open、dual/post-open，以及满足验收谓词时的既定 MinIO probe；它不包含密码、signup、邀请、角色或 API Key 写入。规划与 apply-time preflight 必须逐项重放 completed-publication 谓词。
 
 ### 停止
 
@@ -557,6 +573,8 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
 - 所有 `apply` 共享 apply-effect 独占锁；静态有效的 plan 先写唯一的 `ATTEMPTED` 审计 reservation，竞争 loser 只把它改为 `CONTENDED`，随后在任何 gateway/HTTP/receipt/StateRecord/service effect 前失败；未知提交或补偿保留 `ATTEMPTED`/`IN_PROGRESS` 并要求新 reconciliation plan。
 - 每个 plan application 都使用固定 schema、单调 generation 和状态相关的 nullable/result-code 组合；终态不可修改，不确定结果不得伪装为 `FAILED` 或 `REJECTED`。
 - ActionRegistry、DeploymentPlan、规划器和 apply-time preflight 按分层职责共享同一个规范 action tuple；不序列化额外 `PlanBranch`，cleanup-only repair 只能使用固定的两行动作和隐式 claim/preflight 屏障。
+- bootstrap 写前 API-loopback 检查与写后 composite pre-open 使用不同 action；fresh initializer 只由 API 启动执行一次，计划行在启动后仅验证结果。
+- bootstrap completion 只能使用冻结的 receipt/probe/slot 映射所选连续后缀；已发布并完成 capture cleanup 的中断态只能走零 mutation 的 readiness-only；discovery、revoke-only 和 discard-only 必须以显式 runtime-stop action 收尾，不能与 create/publish 或 acceptance 混合。
 - 未跟踪运行文件是唯一操作者管理的持久秘密来源；必要的 API 进程环境复制受本机可信边界约束，状态容器配置、日志和状态输出不泄露秘密值。
 - Phase 2 API Key 只能来自 capture stat、bootstrap receipt 与 StateRecord 完整锚定的同一 raw-key/ID 证据链；发布结果先锚定、capture 后删除，未锚定捕获只能精确吊销。
 - bootstrap receipt 使用 SHA-addressed immutable generations，StateRecord 是唯一 current 指针；fresh apply 的动态 capture/发布 stat 只能通过同一 claimed context 的 State-selected lineage 传给后续已计划动作，orphan generation 无权推进。

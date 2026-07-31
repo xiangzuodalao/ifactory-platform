@@ -463,8 +463,9 @@ Expected: tests and doctor pass; the commit contains no `.runtime`, venv, creden
 - Produces: `ApiKeyCapturePlanBinding(attempt_id, api_key_id, label, runtime_user_id, company_id, captured_file)`
 - Produces: `ApiKeyCleanupPlanBinding(attempt_id, api_key_id, terminal_outcome, historical_captured_file, observed_captured_file, phase2_env_file)`
 - Produces: `BootstrapPlanBindings(credentials, invitation_probe, api_key_capture, api_key_cleanup, role_external_id, api_key_label, phase2_env_logical_id, phase2_env_file)`
-- Produces: enums `Operation`, `RuntimeProfile`, `LicenseMode`, `GatewayMode`, `SourceStatus`
+- Produces: enums `Operation`, `RuntimeProfile`, `LicenseMode`, `GatewayMode`, `SourceStatus`, `PlanApplicationState`, `ApplicationResultCode`
 - Produces: central `ActionCode`, `ActionTargetKind`, targeted `PlannedAction` and `ActionRegistry`
+- Produces: `ActionRegistry.validate(operation: Operation, profile: RuntimeProfile, license_mode: LicenseMode, bootstrap_bindings: BootstrapPlanBindings | None, actions: Sequence[PlannedAction]) -> None`
 - Produces: `DeploymentPlan.create(snapshot: DeploymentSnapshot, operation, profile, license_mode, bootstrap_bindings: BootstrapPlanBindings | None, actions, now, plan_nonce) -> DeploymentPlan`
 - Produces: `canonical_json_bytes(value: JsonValue) -> bytes`
 - Produces: `strict_canonical_json_loads(data: bytes, *, max_bytes: int, max_depth: int) -> JsonValue`
@@ -475,9 +476,11 @@ Expected: tests and doctor pass; the commit contains no `.runtime`, venv, creden
 - Produces: `acquire_deployment_write_lease(lock_path, reservation: PlanAttemptReservation) -> DeploymentWriteLease`
 - Produces: `load_confirmed_plan(reservation: PlanAttemptReservation, snapshot, current_bootstrap_bindings: BootstrapPlanBindings | None, lease: DeploymentWriteLease) -> ConfirmedDeploymentPlan`
 - Produces: `claim_plan_application(plan: ConfirmedDeploymentPlan, plans_dir, lease: DeploymentWriteLease, fail_closed: FailClosedEvidence) -> ClaimedApplyContext`
-- Produces: canonical `PlanApplicationRecord`, `StateRecord`, `StartPermit`, `BudgetLedger`, `BudgetRecoveryReceipt`, `BootstrapReceipt`, `AcceptanceReceipt`
-- Produces: `BootstrapReceiptStore.load_current(state: StateRecord) -> BootstrapReceipt | None`
-- Produces: `BootstrapReceiptStore.append_and_anchor(context: ClaimedApplyContext, previous_state: StateRecord, next_receipt: BootstrapReceipt) -> tuple[BootstrapReceipt, StateRecord]`
+- Produces: canonical typed `PlanApplicationRecord` and `StateRecord`
+- Produces: `FixedRecordSchema(record_name, required_fields, fixed_values)` plus exact structural schemas for `StartPermit`, `BudgetLedger`, `BudgetRecoveryReceipt`, `BootstrapReceipt` and `AcceptanceReceipt`
+- Produces: `require_exact_record_fields(value: Mapping[str, JsonValue], schema: FixedRecordSchema) -> None`
+- Produces: `PlanApplicationRecord.attempted(plan_sha256: str, now: datetime, application_id: str) -> PlanApplicationRecord`
+- Produces: `PlanApplicationRecord.transition(state: PlanApplicationState, now: datetime, secondary_result_codes: Sequence[ApplicationResultCode] = ()) -> PlanApplicationRecord`
 
 - [ ] **Step 1: Write failing strict-config and record tests**
 
@@ -498,15 +501,27 @@ Tests must assert:
 - plan lifetime is exactly 30 minutes and permit lifetime is at most 60 seconds;
 - `plan_nonce` is a fresh cryptographically random 128-bit lowercase hex value per public plan invocation, is non-secret and injectable in tests; regenerating after any consumed application hash must produce a distinct hash even when all evidence and timestamp resolution are otherwise unchanged;
 - wrong hash, expired plan, changed source/config/unit generation, reused plan application, and plan/action mismatch fail before a runner call;
+- direct `DeploymentPlan.create()` with an unregistered, misordered or branch-invalid tuple fails because the constructor itself invokes `ActionRegistry.validate`; the external planning pipeline is not the only enforcement point;
 - wrong hash/noncanonical bytes/expiry fail before an attempt record; a statically valid `apply` exclusively creates and fsyncs one `ATTEMPTED` application reservation before competing for the effect lease, so contention, crash or later drift consumes that exact plan hash;
+- `PlanApplicationRecord` accepts exactly the approved fixed fields and UTC timestamp encoding, requires its `plan_sha256` to match the filename, rejects every unknown/missing field and invalid state/generation/nullable/result-code combination, and permits only `ATTEMPTED -> CONTENDED|REJECTED|IN_PROGRESS` plus `IN_PROGRESS -> SUCCEEDED|FAILED`;
+- application IDs are injectable 128-bit lowercase hex values in tests; application/result fields remain immutable across transitions, time is monotonic, result codes are ordered/unique/bounded stable enums, and terminal records cannot transition again;
+- `REJECTED` is available only for a deterministic post-lease/pre-service-effect confirmation failure; uncertain fail-close leaves `ATTEMPTED`, while uncertain post-claim effect/compensation/terminal persistence leaves `IN_PROGRESS`;
 - plans bind the exact absent/present `StateRecord` generation and canonical SHA; a stale plan loaded after another apply is rejected even if source/config are unchanged;
 - two distinct valid plans cannot hold the deployment write lease concurrently; the loser durably transitions only its own reservation `ATTEMPTED -> CONTENDED`, has zero gateway/HTTP/receipt/State/service effects and must be regenerated;
 - direct construction of `ConfirmedDeploymentPlan` fails; a successful loader returns the capability wrapper and exposes the immutable payload only as `.plan`;
 - direct construction/import of production `PlanAttemptReservation`/`DeploymentWriteLease`/`FailClosedEvidence`/`ClaimedApplyContext` mints fails; only the tests-support fixture can create fake capabilities;
 - claiming without gateway-produced fail-closed evidence, with evidence for another plan/generation, or before an `IN_PROGRESS` fsync/reopen is rejected;
-- plan/receipt/state/permit/budget records reject secret-like keys and a test sentinel value;
-- bootstrap, acceptance and budget-recovery receipts require distinct fixed `record_type` discriminators, and each secure loader rejects canonical bytes for either other receipt type;
-- bootstrap receipt generations are immutable files named by their canonical SHA below the one private generation directory; `StateRecord.bootstrap_receipt_sha256` is the only current pointer, orphan generations never become current by directory scan, and appending a generation never overwrites the pointer's prior bytes;
+- registry completeness tests require the frozen rank to contain every `ActionCode` exactly once, verify same-code target ordering, cover every row of the branch-cardinality table and reject one-at-a-time missing/extra/duplicate actions;
+- registry tests cover every private tuple class—active/stopped start,
+  discovery, all four bootstrap-repair subgrammars, budget-recovery and
+  capture-cleanup repair—and the canonical action grammar for restart, stop,
+  bootstrap and license switch; they reject non-contiguous completion suffixes,
+  a readiness-only tuple containing any mutation, revoke/create/publish
+  mixtures, alternative topological ordering, cross-class mixture or
+  contextual binding/profile/license mismatch;
+- cleanup-only repair accepts exactly `gateway.fail-closed` followed by targeted `repair.finalize-api-key-capture-cleanup`; claim and local preflight are verified as implicit lifecycle barriers, not serialized actions, and no startup/license/authentication/HTTP/raw-unwrap/readiness/dual action is accepted;
+- plan/state records and every fixed record schema reject secret-like keys and a test sentinel value;
+- parameterized structural-schema tests delete every required field, add one unknown field and mutate every fixed literal for `StartPermit`, `BudgetLedger`, `BudgetRecoveryReceipt`, `BootstrapReceipt` and `AcceptanceReceipt`; receipt schemas require distinct fixed `record_type` discriminators and reject canonical bytes for either other receipt type;
 - `StateRecord` rejects missing/unknown fields, has a monotonic generation, cannot roll back, and supplies every binding required by active-start, permit and readiness evidence;
 - plan generation prints a bounded action summary and one lowercase SHA-256, never env values.
 
@@ -544,6 +559,34 @@ def test_canonical_json_rejects_duplicate_keys() -> None:
     payload = b'{"schema_version":1,"schema_version":1}\n'
     with pytest.raises(DeploymentError) as caught:
         strict_canonical_json_loads(payload, max_bytes=1024, max_depth=8)
+    assert caught.value.code == "CMMS-E011"
+
+
+def test_plan_application_record_enforces_generation_and_state_graph() -> None:
+    attempted_at = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+    attempted = PlanApplicationRecord.attempted(
+        plan_sha256="1" * 64,
+        now=attempted_at,
+        application_id="a" * 32,
+    )
+    claimed = attempted.transition(
+        PlanApplicationState.IN_PROGRESS,
+        now=attempted_at + timedelta(seconds=1),
+    )
+    succeeded = claimed.transition(
+        PlanApplicationState.SUCCEEDED,
+        now=attempted_at + timedelta(seconds=2),
+    )
+
+    assert attempted.application_generation == 1
+    assert claimed.application_generation == 2
+    assert succeeded.application_generation == 3
+
+    with pytest.raises(DeploymentError) as caught:
+        attempted.transition(
+            PlanApplicationState.SUCCEEDED,
+            now=attempted_at + timedelta(seconds=1),
+        )
     assert caught.value.code == "CMMS-E011"
 ```
 
@@ -671,6 +714,8 @@ class ActionCode(StrEnum):
     REPAIR_REVOKE_UNCAPTURED_API_KEY = "repair.revoke-uncaptured-api-key"
     REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP = "repair.finalize-api-key-capture-cleanup"
     REPAIR_DISCARD_REJECTED_CANDIDATE = "repair.discard-rejected-candidate"
+    REPAIR_STOP_LOOPBACK_RUNTIME = "repair.stop-loopback-runtime"
+    READINESS_REQUIRE_API_LOOPBACK = "readiness.require-api-loopback"
     READINESS_REQUIRE_LOOPBACK = "readiness.require-loopback"
     GATEWAY_ENABLE_DUAL = "gateway.enable-dual"
     READINESS_REQUIRE_DUAL = "readiness.require-dual"
@@ -697,9 +742,324 @@ class PlannedAction:
 
 Targets are canonical, non-secret identifiers already bound elsewhere in the plan: one of the three identity enum values, invitation-probe slot UUID, stable role external ID, stable API-Key label, receipt-bound API-Key ID, the fixed Phase 2 env logical ID, deterministic Compose resource-set ID, receipt logical ID, or `null` for an untargeted infrastructure action. An `API_KEY_ID` target is the canonical decimal representation of a positive Java `Long` (`1..9223372036854775807`), never a UUID, label, signed value or leading-zero decimal; the CMMS client parses and range-checks it again at the HTTP boundary. Registry metadata declares whether a code requires, forbids or permits multiple distinct targets. Bootstrap rotate/create actions themselves authorize promotion only for their one bound identity; role/API-Key creation use their stable semantic targets; revoke requires an already discovered live API-Key ID; capture-cleanup finalization requires `receipt:cmms-bootstrap`; the discard repair code requires an explicit identity target.
 
-`ActionRegistry` maps each enum value to exactly one handler, mutation class, target policy and allowed operations. It rejects unknown actions, duplicate `(code,target)` rows, illegal/missing targets and validates a dependency DAG before plan serialization: fail-close is first; install/create precedes start; online debit or offline verification precedes permit; permit precedes a new API PID; bootstrap writes require loopback readiness and cannot appear in ordinary operations; dual enable follows loopback readiness; dual readiness follows enable; the MinIO route probe is acceptance bootstrap/repair only. Online debit and unknown-budget recovery are mutually exclusive. Discovery-only repair requires `receipt:cmms-bootstrap`, is mutually exclusive with every CMMS API write, dual-gateway and acceptance action, and terminates loopback-only. Capture-cleanup finalization is `REPAIR`-only, targets that same receipt, is mutually exclusive with service startup, authentication, HTTP, secret unwrap, publish/revoke and dual-gateway actions, and may follow only the always-first fail-close/claim/local-preflight sequence. `STOP`, active idempotent `START`, stopped `START`, each restart, bootstrap, all four repair forms and license switch have separate allowed rows, so a broad operation name cannot authorize a hidden branch.
+`ActionRegistry` maps each enum value to exactly one handler, mutation class,
+target policy and allowed operations. Its public validation input is only the
+already planned `operation`, `profile`, `license_mode`, `bootstrap_bindings`
+and ordered actions; it never reads State, files, processes or HTTP.
+`DeploymentPlan.create()` always invokes this validation internally after
+checking its scalar fields, so a caller cannot bypass the registry by calling
+the constructor directly.
 
-Tests iterate the enum and require one handler, one immutable `allowed_operations` policy and one target policy per value, generate every legal sequence, and reject unknown, duplicate, target substitution, repeated identity, wrong-operation, missing-dependency, wrong-order and mutually exclusive combinations. The allowed-operation policy may contain both `BOOTSTRAP` and `REPAIR` for a bootstrap action; it is never interpreted as “exactly one Operation.” Planner output serializes each code through `ActionCode.value` plus the canonical `target_kind`/`target_id`; appliers dispatch the complete `PlannedAction` only through the same registry.
+The registry rejects unknown actions, duplicate `(code,target)` rows and
+illegal/missing targets. Fail-close is first; stop precedes replacement;
+infrastructure install/create precedes start; exactly one mode-appropriate license
+prerequisite precedes a permit; permit precedes a new API PID. The distinct
+`readiness.require-api-loopback` action proves only the current API
+PID/socket, fixed loopback health endpoint and license barrier after a start;
+it performs no CMMS authentication or domain reconciliation. It is mandatory
+before discovery reads or bootstrap writes. The later
+`readiness.require-loopback` is the complete composite pre-open check after
+the planned bootstrap state is present, whether produced by same-plan
+mutations or by an exact State-selected completed publication. Dual enable
+follows that composite check, dual readiness follows enable, and the
+acceptance MinIO probe follows dual readiness. Online debit and unknown-budget
+recovery are mutually exclusive.
+
+The registry uses a module-private tuple classifier and never serializes or exports a second `PlanBranch` value:
+
+```text
+START_ACTIVE
+START_STOPPED
+REPAIR_DISCOVERY
+REPAIR_BOOTSTRAP_MUTATION
+    REPAIR_BOOTSTRAP_MUTATION_COMPLETION
+    REPAIR_BOOTSTRAP_READINESS_ONLY
+    REPAIR_BOOTSTRAP_MUTATION_REVOKE_ONLY
+    REPAIR_BOOTSTRAP_MUTATION_DISCARD_ONLY
+REPAIR_BUDGET_RECOVERY
+REPAIR_CAPTURE_CLEANUP
+```
+
+Canonical order is not inferred from a dependency topological sort. It is this
+one frozen rank, from first to last:
+
+```text
+gateway.fail-closed
+process.stop-frontend
+process.stop-api
+license.stop-guard
+compose.stop-state-gateway
+runtime.install-control
+toolchain.install
+images.pull-exact
+compose.create-state-gateway
+compose.start-state-gateway
+build.api
+frontend.verify
+systemd.install-units
+license.switch-mode
+license.verify-offline
+license.debit-online-start
+license.recover-unknown-budget
+process.create-api-permit
+process.start-api
+cmms.initialize-fresh-database
+process.start-frontend
+readiness.require-api-loopback
+repair.capture-bootstrap-discovery
+repair.revoke-uncaptured-api-key
+repair.discard-rejected-candidate
+bootstrap.rotate-super-admin
+bootstrap.create-organization
+bootstrap.create-role
+bootstrap.probe-invitation-enforcement
+bootstrap.create-invitation
+bootstrap.create-runtime-identity
+bootstrap.create-api-key
+bootstrap.finalize-role
+bootstrap.publish-phase2-api-key
+repair.stop-loopback-runtime
+readiness.require-loopback
+gateway.enable-dual
+readiness.require-dual
+readiness.probe-minio-route
+repair.finalize-api-key-capture-cleanup
+```
+
+`cmms.initialize-fresh-database` is not dispatched as a second initializer.
+For fresh bootstrap, the `process.start-api` handler first requires that later
+row to be present as explicit authorization for the reviewed
+`ApplicationInitializer` startup side effect. After the new API PID returns,
+the initializer row is dispatched only as a post-start verification of the
+expected source-defined company/settings/role/user/plans/bucket result. It
+performs no additional write and must pass before frontend start or API
+loopback readiness.
+
+For multiple rows with the same code, registry metadata must explicitly allow
+multiple distinct targets; their secondary rank is the ASCII tuple
+`(target_kind.value, target_id)`. Untargeted rows sort before targeted rows.
+The input tuple must already equal that exact ordering. A dependency-equivalent
+alternative order is invalid.
+
+Use these cardinality shorthands:
+
+```text
+F = exactly one gateway.fail-closed
+N = exactly one process.create-api-permit + one process.start-api
+L = exactly one license.verify-offline in offline mode, or exactly one
+    license.debit-online-start in online mode
+B = exactly one readiness.require-api-loopback
+P = exactly one readiness.require-loopback + one gateway.enable-dual +
+    one readiness.require-dual
+I_BOOTSTRAP = each of runtime.install-control, toolchain.install,
+    images.pull-exact, build.api, frontend.verify and systemd.install-units
+    has cardinality 0..1
+I_REPAIR_API = each of runtime.install-control, toolchain.install,
+    images.pull-exact, compose.start-state-gateway, build.api and
+    systemd.install-units has cardinality 0..1
+I_REPAIR_FULL = I_REPAIR_API plus frontend.verify with cardinality 0..1
+C_FULL = the nine correctly targeted bootstrap.* rows from
+    bootstrap.rotate-super-admin through bootstrap.publish-phase2-api-key,
+    in frozen-rank order and including the invitation probe
+C_PROBE_RESOLVED = C_FULL with only
+    bootstrap.probe-invitation-enforcement removed
+C = exactly one suffix of C_FULL or C_PROBE_RESOLVED that ends in
+    bootstrap.publish-phase2-api-key
+R = exactly one untargeted repair.stop-loopback-runtime
+```
+
+Task 8 derives one strict invitation-probe disposition from the
+State-selected receipt's `action_attempts`; it does not add another top-level
+wire field. The only values visible to planning are:
+
+```text
+NOT_ATTEMPTED
+PENDING_OR_UNCERTAIN
+ENFORCED
+UNKNOWN_NO_USER
+UNEXPECTED_USER_OR_INVALID
+```
+
+For a `bootstrap.probe-invitation-enforcement` attempt, the only wire
+`result_code` values are `ATTEMPT_PENDING`,
+`INVITATION_PROBE_ENFORCED`, `INVITATION_PROBE_UNKNOWN_NO_USER`,
+`INVITATION_PROBE_UNEXPECTED_USER` and
+`INVITATION_PROBE_DETERMINISTIC_FAILURE`. No row maps to `NOT_ATTEMPTED`;
+`ATTEMPT_PENDING` maps to `PENDING_OR_UNCERTAIN`; the next two same-named
+terminal codes map to `ENFORCED` and `UNKNOWN_NO_USER`; the final two, any
+duplicate probe attempt not justified by the table, or any invalid
+slot/user/result cross-product map to `UNEXPECTED_USER_OR_INVALID`.
+
+The fold over the append-only probe-attempt history is also closed. Zero rows
+produce `NOT_ATTEMPTED`. One row produces the disposition mapped from its
+current result. A second row is legal only when the first row terminally
+resolved `INVITATION_PROBE_UNKNOWN_NO_USER`, the new row belongs to a later
+confirmed plan, and its slot ID/email hash are both distinct from the first
+row and match that plan's `NEW_DISTINCT` binding. While that second row is
+pending, it alone is the effective `PENDING_OR_UNCERTAIN` row and discovery
+must bind its slot; when terminal, its result alone is the effective
+disposition. The first row remains immutable history used only to prove
+distinctness. A second `UNKNOWN_NO_USER` is a safe terminal but exhausted
+outcome: it authorizes no third probe or completion tuple. A third row, two
+pending rows, a row after `ENFORCED`/unexpected/deterministic failure,
+interleaved targets, non-monotonic timestamps, reused attempt/slot/email or
+any other sequence is `UNEXPECTED_USER_OR_INVALID`. Thus the table's
+`UNKNOWN_NO_USER + NEW_DISTINCT` row applies only to an exact one-row history.
+
+`ENFORCED` means the exact planned probe received the reviewed `406`, the
+bounded follow-up search proved zero matching users, that terminal result was
+receipt-first/State-anchored and the owned probe slot was retired.
+`UNKNOWN_NO_USER` means a separately confirmed discovery-only repair proved
+zero users but could not prove the historical response; it also State-anchored
+that result and retired the old slot. `PENDING_OR_UNCERTAIN` retains and binds
+the exact old slot. An `UNUSED` slot has no ID in any prior probe attempt and
+matches its current descriptor/password stats; a `NEW_DISTINCT` slot is
+`UNUSED` and additionally differs from the retired
+`UNKNOWN_NO_USER` slot. `NONE` means no slot is bound.
+
+At plan/preflight entry, the contextual planner and apply-time preflight
+freeze this complete
+`(receipt state, probe disposition, slot class) -> C language/start` mapping.
+It does not reclassify the immutable same-apply tuple after one of its actions:
+
+| State-selected receipt state | Probe disposition | Required slot | Only legal completion body |
+|---|---|---|---|
+| no receipt / `UNINITIALIZED` | `NOT_ATTEMPTED` | `UNUSED` | all of `C_FULL`, starting at rotate-super-admin |
+| `ADMIN_ROTATED` | `NOT_ATTEMPTED` | `UNUSED` | `C_FULL` suffix starting at create-organization |
+| `COMPANY_CREATED` | `NOT_ATTEMPTED` | `UNUSED` | `C_FULL` suffix starting at create-role |
+| `ROLE_CREATED` | `NOT_ATTEMPTED` | `UNUSED` | `C_FULL` suffix starting at probe-invitation-enforcement |
+| `ROLE_CREATED` | `UNKNOWN_NO_USER` from the exact one-row history | `NEW_DISTINCT` | `C_FULL` suffix starting at probe-invitation-enforcement |
+| `ROLE_CREATED` | `ENFORCED` | `NONE` | `C_PROBE_RESOLVED` suffix starting at create-invitation |
+| `ROLE_CREATED` | `PENDING_OR_UNCERTAIN` | exact old slot | no `C`; discovery-only repair of that slot |
+| `INVITATION_CREATED` | `ENFORCED` | `NONE` | `C_PROBE_RESOLVED` suffix starting at create-runtime-identity |
+| `RUNTIME_IDENTITY_CREATED` | `ENFORCED` | `NONE` | `C_PROBE_RESOLVED` suffix starting at create-api-key |
+| `API_KEY_CAPTURED` | `ENFORCED` | `NONE` | `C_PROBE_RESOLVED` suffix starting at finalize-role |
+| `FINAL_PERMISSIONS_VERIFIED` | `ENFORCED` | `NONE` | publish-only `C_PROBE_RESOLVED` suffix, but only with the exact anchored pre-publication capture lineage |
+| `FINAL_PERMISSIONS_VERIFIED` or `GATEWAY_ENABLED` | `ENFORCED` | `NONE` | empty `C` and readiness-only repair, but only with the exact completed-publication predicate below |
+
+For any row from `INVITATION_CREATED` onward, the receipt must also satisfy
+Task 8's exact state-specific identity, invitation, API-Key capture and publish
+cross-products. A published result whose capture cleanup is still pending
+selects capture-cleanup-only first; after that new State-selected generation,
+a new plan may select readiness-only. `UNEXPECTED_USER_OR_INVALID`, a
+state/result/slot mismatch, a reused retired slot, a pending non-probe action
+or any unlisted combination is `UNKNOWN` and produces no completion tuple.
+An unexpected created probe user remains blocked on its separately designed
+cleanup and is never treated as candidate discard.
+
+Every branch contains `F` and then obeys this closed cardinality table:
+
+The registry enforces every numeric range and every condition derivable from
+its five public inputs. Conditions marked `iff` that depend on live
+`PlanningAssessment` evidence are structurally `0..1` here; Task 9 must make
+their inclusion exact and apply-time preflight must replay that decision.
+Every ordinary row containing `N` also lists mandatory `L`: offline means
+exactly one offline verification and zero debit, online means exactly one
+ordinary debit and zero offline verification. Budget recovery is the sole
+`N` branch that forbids ordinary `L` and substitutes its one 10-slot recovery
+row.
+
+| Branch | Required exactly | Conditional | Forbidden highlights |
+|---|---|---|---|
+| `BOOTSTRAP` | `compose.create-state-gateway`, `L`, `N`, `cmms.initialize-fresh-database`, `process.start-frontend`, `B`, `C_FULL`, `P` | `I_BOOTSTRAP`; MinIO probe exactly once iff the acceptance predicate holds | every repair sentinel and stop/recovery action |
+| `START_ACTIVE` | `P` | `process.start-frontend` at most once iff the managed frontend is stopped | every license debit/verify/recovery, permit, API start/stop and mutation |
+| `START_STOPPED` | `compose.start-state-gateway`, `L`, `N`, `process.start-frontend`, `P` | none | install/build/mutation/recovery and API stop |
+| `RESTART_API` | `process.stop-api`, `build.api`, `L`, `N`, `P` | `license.stop-guard` at most once and included iff source mode is offline | every bootstrap/repair mutation and Compose create |
+| `RESTART_FRONTEND` | `process.stop-frontend`, `process.start-frontend`, `P` | none | every API stop/start, license debit/recovery and mutation |
+| `STOP` | `process.stop-frontend`, `process.stop-api`, `compose.stop-state-gateway` | `license.stop-guard` at most once and included iff source mode is offline | every start, mutation and readiness/dual action |
+| `REPAIR_DISCOVERY` | `L`, `N`, `B`, one targeted `repair.capture-bootstrap-discovery`, `R` | `I_REPAIR_API` | every CMMS write, frontend start/verify, composite `P`, dual and MinIO probe |
+| `REPAIR_BOOTSTRAP_MUTATION_COMPLETION` | `L`, `N`, `process.start-frontend`, `B`, one legal `C`, `P` | `I_REPAIR_FULL`; MinIO probe exactly once iff the acceptance predicate holds | discovery, revoke, discard, budget recovery, runtime stop and capture cleanup |
+| `REPAIR_BOOTSTRAP_READINESS_ONLY` | `L`, `N`, `process.start-frontend`, `B`, `P` | `I_REPAIR_FULL`; MinIO probe exactly once iff the acceptance predicate holds | every bootstrap/repair mutation, discovery, budget recovery, runtime stop and capture cleanup |
+| `REPAIR_BOOTSTRAP_MUTATION_REVOKE_ONLY` | `L`, `N`, `B`, one targeted `repair.revoke-uncaptured-api-key`, `R` | `I_REPAIR_API` | every bootstrap.* row, frontend start/verify, composite `P`, dual, MinIO, discovery/discard/recovery/cleanup |
+| `REPAIR_BOOTSTRAP_MUTATION_DISCARD_ONLY` | `L`, `N`, `B`, one targeted `repair.discard-rejected-candidate`, `R` | `I_REPAIR_API` | every bootstrap.* row, frontend start/verify, composite `P`, dual, MinIO, discovery/revoke/recovery/cleanup |
+| `REPAIR_BUDGET_RECOVERY` | `license.recover-unknown-budget`, `N`, `process.start-frontend`, `P` | `I_REPAIR_FULL`; online mode only | ordinary `L`, `B`, every bootstrap mutation/discovery/cleanup sentinel |
+| `REPAIR_CAPTURE_CLEANUP` | only the exact two rows below | none | every other action |
+| `SWITCH_LICENSE` | `process.stop-api`, `license.switch-mode`, target-mode `L`, `N`, `P` | `license.stop-guard` at most once and included iff the source mode is offline; `process.start-frontend` at most once iff stopped | recovery, bootstrap/repair mutation and Compose create |
+
+Task 9 includes an `I_BOOTSTRAP`/`I_REPAIR_API`/`I_REPAIR_FULL` row exactly when
+`PreflightAssessment` labels that exact code/target
+`SATISFIABLE_BY_ACTION`; it rejects a required finding whose code is outside
+the branch allowlist. Thus one assessment determines one action set, the
+frozen rank determines one order, and neither a caller nor the registry picks
+among optional alternatives. The registry recognizes both finite `C`
+languages structurally. Task 9 chooses the language and suffix start only from
+the frozen receipt/probe/slot mapping above, never from a caller choice or from
+`NEXT_STATE` alone.
+
+`START_ACTIVE` excludes API debit/recovery, permit and start actions;
+`START_STOPPED` contains exactly one permit/start path and the
+license-mode-appropriate prerequisite. Discovery requires targeted
+`repair.capture-bootstrap-discovery`, excludes every CMMS write,
+composite-readiness/dual/acceptance action and terminates loopback-only.
+The bootstrap/API-Key repair family is exactly one of contiguous completion,
+readiness-only, revoke-only or candidate-discard-only; those subgrammars are
+mutually exclusive and exclude all other repair sentinel classes.
+Budget recovery contains only the recovery sentinel plus its exact
+startup/readiness prerequisites and excludes bootstrap identity/API-Key
+writes. Capture cleanup has exactly the following plan-visible tuple:
+
+```text
+gateway.fail-closed
+repair.finalize-api-key-capture-cleanup
+    target_kind = receipt
+    target_id = receipt:cmms-bootstrap
+```
+
+`repair.stop-loopback-runtime` is untargeted and legal only as the final row of
+discovery, revoke-only or discard-only. After the preceding receipt/State
+anchor is reopened, it stops and proves inactive the exact API,
+frontend-if-present and offline guard/timer user units, clears their process
+identities in State and leaves PostgreSQL, MinIO and loopback-only Nginx
+intact. It performs no CMMS request or receipt mutation. An uncertain stop or
+State update leaves the application `IN_PROGRESS`; the next plan cannot assume
+either active or stopped state.
+
+For capture cleanup, application claim and local preflight are lifecycle
+barriers inserted between those two plan-visible rows; they are not
+`ActionCode` values. The tuple excludes Compose/systemd startup, license,
+permit, authentication, HTTP, raw unwrap, publish/revoke, readiness and
+dual-gateway actions. The MinIO route probe is structurally allowed only for
+acceptance bootstrap, bootstrap-mutation completion or readiness-only repair;
+Task 9's contextual planner and exact preflight replay decide when it is
+mandatory. `STOP`, both start classes, each restart, bootstrap, all four
+high-level repair forms and license switch therefore have distinct grammar
+rather than relying on the broad operation name.
+
+The completed-publication predicate for
+`REPAIR_BOOTSTRAP_READINESS_ONLY` is exact and conjunctive:
+
+- the operation is `REPAIR`, and the common repair precondition proves the
+  managed API stopped with no active/consuming permit;
+- current `StateRecord.bootstrap_receipt_sha256` selects and reopens the typed
+  receipt used by planning; State's bootstrap state matches the receipt state,
+  and the exact State generation/SHA plus receipt `last_plan_sha256` are bound
+  independently;
+- receipt state is `FINAL_PERMISSIONS_VERIFIED` or `GATEWAY_ENABLED`, its
+  invitation probe disposition is `ENFORCED`, and no action attempt is pending
+  or uncertain;
+- `phase2_publish_status=PUBLISHED`,
+  `api_key_capture_status=ANCHORED_RAW`,
+  `api_key_capture_cleared=true`, the historical capture binding is retained,
+  the capture path is proven absent, and the current Phase 2 env stat exactly
+  matches the State-selected published binding;
+- capture cleanup is not pending, there is no discovery/revoke/discard target,
+  and the exact source/config/identity bindings required by `B` and `P` are
+  current;
+- completion reconciliation is still required because the selected state is
+  not yet `GATEWAY_ENABLED`, the application named by the receipt's
+  `last_plan_sha256` is nonterminal, or an otherwise eligible
+  acceptance-profile completion lacks its exact valid acceptance receipt.
+
+If all completion evidence is already terminal and consistent, `repair` is
+rejected and ordinary `status`/idempotent `start` applies. Readiness-only never
+contains a bootstrap or repair mutation. It starts a fresh stopped-runtime
+bundle, performs API-loopback proof, formal read-only reconciliation,
+composite pre-open, dual enable/post-open and, when contextually required, the
+one planned MinIO probe; success may State-anchor `GATEWAY_ENABLED` and the
+acceptance receipt. Apply-time preflight reopens and exact-replays every
+predicate above before any startup, debit, permit or HTTP effect.
+
+Tests iterate the enum and require one handler, one immutable `allowed_operations` policy and one target policy per value. They cover each private tuple class and every operation's canonical grammar, then reject unknown, duplicate, target substitution, repeated identity, wrong-operation, missing-dependency, alternative topological ordering, cross-class mixture, profile/license mismatch and action-dependent binding mismatch. The allowed-operation policy may contain both `BOOTSTRAP` and `REPAIR` for a bootstrap action; it is never interpreted as “exactly one Operation.” Planner output serializes each code only through `ActionCode.value` plus canonical `target_kind`/`target_id`; appliers dispatch the complete `PlannedAction` through the same registry.
 
 Every plan binds a fresh non-secret `plan_nonce`, root SHA, CMMS gitlink/head/dirty fingerprint, config digests, toolchain manifest digest, startup-sensitive manifest digest, target profile/mode, expected unit generation, exact StateRecord generation/SHA and an ordered tuple of `PlannedAction`. Its explicit `bootstrap_bindings` field is a canonical, secret-free projection of the inputs required by that action graph: three canonical identity labels/emails with current/candidate logical-file stat bindings, optional invitation-probe UUID/email plus descriptor/password stat bindings, optional receipt-anchored API-Key capture attempt/ID/owner/company plus captured-file stat, optional cleanup-only terminal outcome plus historical/current-presence stats, stable role/API-Key labels, the fixed Phase 2 env logical ID and its current file stat. It contains no absolute path, password/API-Key bytes or content digest. `CredentialSlots.to_plan_bindings()`, `InvitationProbeSlot.to_plan_binding()` and the strict State-selected receipt/capture/cleanup projection are the only constructors.
 
@@ -709,7 +1069,71 @@ Targeted `repair.finalize-api-key-capture-cleanup` instead requires `api_key_cap
 
 A fresh plan does not invent `company_id`, `company_settings_id`, user IDs or role IDs that CMMS has not created yet: those live IDs are receipt-first apply results and later actions consume them only after same-identity readback. Acceptance profile requires `cmms_head == cmms_gitlink` and both worktrees clean.
 
-After static canonical/hash/expiry validation and before competing for the effect lease, public `apply` exclusively creates/fsyncs/reopens that plan hash's `ATTEMPTED` application record and receives an opaque `PlanAttemptReservation`. This append-only per-plan audit reservation is the sole intentional write outside the effect lease. Any existing application record makes the plan non-reusable. Public `apply` then securely opens—or on first use exclusively creates—the exact zero-length current-UID `0600` `.runtime/cmms-development-apply.lock` through its verified parent `dir_fd`, using `O_RDWR|O_CLOEXEC|O_NOFOLLOW` and requiring a regular single-link file. It takes a nonblocking exclusive `flock`; lock-file contents are never used as evidence. On contention it atomically changes only the losing reservation to `CONTENDED`, fsyncs/reopens it and returns busy before gateway/HTTP/receipt/State/service effects. Thus the losing hash is mechanically consumed even when the owner later fails before changing State.
+After static canonical/hash/expiry validation and before competing for the effect lease, public `apply` exclusively creates/fsyncs/reopens that plan hash's `ATTEMPTED` application record and receives an opaque `PlanAttemptReservation`. This append-only per-plan audit reservation is the sole intentional write outside the effect lease. Any existing application record makes the plan non-reusable.
+
+`PlanApplicationRecord` has this exact schema:
+
+```text
+schema_version = 1
+record_type = cmms-plan-application
+application_id
+application_generation
+plan_sha256
+state
+attempted_at
+claimed_at
+terminal_at
+safe_result_codes
+```
+
+`application_id` is an injectable non-secret 128-bit lowercase hexadecimal
+value. `plan_sha256` is lowercase hex64 and the exact basename must be
+`{plan_sha256}.application.json`. Timestamps use fixed-six-digit UTC
+`YYYY-MM-DDTHH:MM:SS.ffffffZ`; immutable timestamps are monotonic.
+Unknown/missing fields are rejected. Valid combinations are:
+
+| State | Generation | `claimed_at` | `terminal_at` | First result code |
+|---|---:|---|---|---|
+| `ATTEMPTED` | 1 | `null` | `null` | `null` |
+| `CONTENDED` | 2 | `null` | required | `APPLY_CONTENDED` |
+| `REJECTED` | 2 | `null` | required | `APPLY_REJECTED` |
+| `IN_PROGRESS` | 2 | required | `null` | `null` |
+| `SUCCEEDED` | 3 | required | required | `APPLY_SUCCEEDED` |
+| `FAILED` | 3 | required | required | `APPLY_FAILED` |
+
+`safe_result_codes` is an ordered, unique tuple of at most 32 stable
+`ApplicationResultCode` values; each value matches
+`[A-Z][A-Z0-9_.-]{0,63}`. Task 2 defines exactly:
+
+```python
+class ApplicationResultCode(StrEnum):
+    APPLY_CONTENDED = "APPLY_CONTENDED"
+    APPLY_REJECTED = "APPLY_REJECTED"
+    APPLY_SUCCEEDED = "APPLY_SUCCEEDED"
+    APPLY_FAILED = "APPLY_FAILED"
+```
+
+A later task may add a named secondary value only to this central enum with
+strict-loader and transition tests; no loader accepts an arbitrary matching
+string. `transition()` itself derives and prepends the state-mandatory primary
+code; callers can supply only declared secondary enum values, never the
+primary or an arbitrary string. In the current v1 implementation there are no
+secondary values, so every terminal tuple contains exactly its one primary
+code. Detailed operation/compensation codes remain in the in-memory
+`ApplyResult` and redacted CLI output rather than being copied into this audit
+record.
+
+The tuple never contains paths, PIDs, exception text, stacks or upstream
+responses. `application_id`, `plan_sha256` and `attempted_at` never change.
+Only `ATTEMPTED -> CONTENDED|REJECTED|IN_PROGRESS` and
+`IN_PROGRESS -> SUCCEEDED|FAILED` are legal; every transition atomically
+replaces, fsyncs, reopens and exact-checks the prior generation, and terminal
+records are immutable. `REJECTED` is only a deterministic
+post-lease/pre-service-effect confirmation failure. Uncertain fail-close
+remains `ATTEMPTED`; uncertain post-claim effect, compensation or terminal
+persistence remains `IN_PROGRESS`.
+
+Public `apply` then securely opens—or on first use exclusively creates—the exact zero-length current-UID `0600` `.runtime/cmms-development-apply.lock` through its verified parent `dir_fd`, using `O_RDWR|O_CLOEXEC|O_NOFOLLOW` and requiring a regular single-link file. It takes a nonblocking exclusive `flock`; lock-file contents are never used as evidence. On contention it atomically changes only the losing reservation to `CONTENDED`, fsyncs/reopens it and returns busy before gateway/HTTP/receipt/State/service effects. Thus the losing hash is mechanically consumed even when the owner later fails before changing State.
 
 The opaque `DeploymentWriteLease` owns the live lock FD/process identity and is held across current snapshot capture, confirmation load, pre-claim fail-close, claim, every local/remote action, receipt/State anchors, compensation and terminal application update. Process death releases the OS lock but leaves `ATTEMPTED` or `IN_PROGRESS` evidence. A second plan cannot wait and then continue on old evidence; it must be regenerated. `plan`, `status` and `secret` do not acquire this effect lease: planning uses stable before/after local generation/SHA reads and aborts on drift, while every apply-time secret/env open is descriptor/stat-lineage bound and aborts on a concurrent secret change. This is an apply-effect single-writer lock, not a blanket lock on every `.runtime` file. Emergency monotonic fail-close remains the safety exception.
 
@@ -719,9 +1143,14 @@ Tasks 3–8 unit-test their adapters with `SafeRuntimeFixture.claimed_context()`
 
 Reserve a statically valid apply with exclusive creation of `.runtime/plans/cmms-development/{plan_sha256}.application.json` in state `ATTEMPTED`. Its strict state machine is `ATTEMPTED -> CONTENDED|REJECTED|IN_PROGRESS`; only `IN_PROGRESS -> SUCCEEDED|FAILED`, and unknown pre-claim/claimed outcomes remain `ATTEMPTED`/`IN_PROGRESS`. Lifecycle first obtains the effect lease, fully confirms the reservation/current snapshot, fail-closes the gateway and proves the external listener absent, then transitions/fsyncs/reopens `IN_PROGRESS` before any other service effect. An existing record in any state makes that plan non-reusable. A crash at either nonterminal state consumes the hash, and recovery starts with a newly generated reconciliation plan.
 
-Persist `BootstrapReceipt` only as immutable `0600` generations at `.runtime/receipts/cmms-bootstrap/{receipt_sha256}.json` below a current-UID `0700` directory; derive the filename only from a recomputed lowercase canonical SHA-256. `StateRecord.bootstrap_receipt_sha256` is nullable and is the sole authority for the current generation. Never select the newest filename, mtime or highest embedded generation by scanning. Persist the distinct clean-profile `AcceptanceReceipt` only at `.runtime/receipts/cmms-development.json`. Each loader requires its own schema discriminator and rejects the other record type; neither path aliases `cmms-development-state.json`.
+The remaining receipt/permit/budget paragraphs in this step are frozen
+downstream contracts tied to `StateRecord`; Task 2 implements their structural
+schemas only. Their typed loaders, constructors and persistence are delivered
+by the owning tasks named below and are not hidden Task 2 work.
 
-Budget recovery uses the exact private directory `.runtime/receipts/cmms-budget-recovery/` mode `0700` and one file `${plan_sha256}.json` mode `0600`. Its `record_type=cmms-budget-recovery-receipt` loader derives the path from an already confirmed lowercase plan hash; arbitrary paths are impossible. Exclusive create writes `PENDING` before quarantine/ledger effects, then the same record may transition once to `SUCCEEDED` or `FAILED`. A pre-existing file in any state makes the plan non-reusable.
+Task 8 persists `BootstrapReceipt` only as immutable `0600` generations at `.runtime/receipts/cmms-bootstrap/{receipt_sha256}.json` below a current-UID `0700` directory; derive the filename only from a recomputed lowercase canonical SHA-256. `StateRecord.bootstrap_receipt_sha256` is nullable and is the sole authority for the current generation. Never select the newest filename, mtime or highest embedded generation by scanning. Task 10 persists the distinct clean-profile `AcceptanceReceipt` only at `.runtime/receipts/cmms-development.json`. Each owning typed loader requires its own schema discriminator and rejects the other record type; neither path aliases `cmms-development-state.json`.
+
+Task 6 budget recovery uses the exact private directory `.runtime/receipts/cmms-budget-recovery/` mode `0700` and one file `${plan_sha256}.json` mode `0600`. Its `record_type=cmms-budget-recovery-receipt` typed loader derives the path from an already confirmed lowercase plan hash; arbitrary paths are impossible. Exclusive create writes `PENDING` before quarantine/ledger effects, then the same record may transition once to `SUCCEEDED` or `FAILED`. A pre-existing file in any state makes the plan non-reusable.
 
 Define one complete `StateRecord` rather than growing ad hoc fields:
 
@@ -770,6 +1199,155 @@ last_operation
 last_transition_code
 updated_at
 ```
+
+Task 2 freezes only the exact top-level structural envelope for each record
+owned by a later task. `FixedRecordSchema` is not a typed loader and cannot
+authorize an operation: it checks the complete keyset, the fixed
+literal values shown with `=`, the recursive secret-field ban and canonical
+JSON shape. The owning task must build the typed loader,
+bounded enum/nested-row validators, legal nullability combinations and
+constructors before that record can be read as evidence. Later tasks may not
+add, remove, rename or silently default a top-level field.
+
+`StartPermit`:
+
+```text
+schema_version = 1
+nonce
+plan_sha256
+created_at
+expires_at
+uid
+root_sha
+cmms_source_fingerprint
+api_artifact_sha256
+controller_entrypoint_sha256
+controller_package_sha256
+unit_generation
+loopback_gateway_sha256
+docker_gateway_ipv4
+license_mode
+budget_debit_id
+```
+
+`BudgetLedger`:
+
+```text
+schema_version = 1
+zone = Asia/Shanghai
+local_date
+controlled_limit = 10
+source_limit = 20
+attempts
+previous_ledger_sha256
+continuity_state
+```
+
+Task 6 owns the exact bounded `BudgetDebit` row inside `attempts`, the initial
+empty-ledger values and all continuity/date semantics. Task 2 does not return a
+typed `BudgetLedger`.
+
+`BudgetRecoveryReceipt`:
+
+```text
+schema_version = 1
+record_type = cmms-budget-recovery-receipt
+status
+plan_sha256
+local_date
+unknown_reason_code
+original_bytes_present
+original_ledger_sha256
+recovery_debit_id
+api_main_pid
+api_process_start_ticks
+safe_result_code
+created_at
+updated_at
+```
+
+Task 6 owns the typed recovery-receipt loader, status/nullability state machine
+and constructors. Task 2 validates only this fixed structural envelope.
+
+`BootstrapReceipt`:
+
+```text
+schema_version = 1
+record_type = cmms-bootstrap-receipt
+receipt_generation
+origin_plan_sha256
+last_plan_sha256
+state
+super_admin_user_id
+company_id
+company_settings_id
+organization_admin_user_id
+role_id
+invitation_email_hash
+runtime_user_id
+api_key_id
+api_key_label
+api_key_capture_attempt_id
+api_key_capture_status
+api_key_capture_file
+phase2_publish_status
+phase2_env_file
+api_key_capture_cleared
+revoked_api_key_ids
+action_attempts
+probe_user_id
+action_result_codes
+created_at
+updated_at
+```
+
+Task 8 owns the exact bounded action-attempt row, capture/publish state
+cross-products, typed loader/store and receipt transition graph. There is no
+empty wire generation: Task 8 creates generation 1 only when it can include
+the pending attempt for the first planned non-idempotent action, then anchors
+that immutable generation through `StateRecord` before sending the request.
+Task 2 neither constructs nor returns a typed `BootstrapReceipt`.
+
+`AcceptanceReceipt`:
+
+```text
+schema_version = 1
+record_type = cmms-acceptance-receipt
+plan_sha256
+root_sha
+cmms_gitlink
+cmms_head
+api_artifact_sha256
+controller_entrypoint_sha256
+controller_package_sha256
+unit_generation
+api_main_pid
+api_process_start_ticks
+gateway_ipv4
+gateway_generation
+license_mode
+company_id
+organization_admin_user_id
+runtime_user_id
+role_id
+api_key_id
+asset_total
+work_order_total
+preopen_report_sha256
+preopen_check_codes
+postopen_report_sha256
+postopen_check_codes
+minio_probe_result_sha256
+minio_probe_check_codes
+minio_cleanup_code
+checked_at
+```
+
+Task 10 owns the typed loader/constructor, fixes `asset_total=0`,
+`work_order_total=0`, `minio_cleanup_code=CLEAN` and the bounded readiness-code
+vocabulary. Task 2 only rejects unknown/missing top-level fields and
+cross-record discriminators; it cannot manufacture or interpret an acceptance
+receipt.
 
 Nullable process/guard/budget fields are explicit JSON `null`, never omitted. Volume identity is a bounded digest over the exact Compose volume name, labels and creation timestamp, not an absolute Docker path or inspect object. Every state change locks, reopens the current canonical record, requires the expected prior generation, writes `generation + 1`, fsyncs and reopens the result; an older generation or mismatched last-plan transition is rollback/conflict.
 
@@ -1509,26 +2087,8 @@ Every user-systemd command, including the offline `systemd-run --user` capabilit
 
 - [ ] **Step 4: Implement single-use permit validation and fail-closed hooks**
 
-`StartPermit` contains:
-
-```text
-schema_version
-nonce
-plan_sha256
-created_at
-expires_at
-uid
-root_sha
-cmms_source_fingerprint
-api_artifact_sha256
-controller_entrypoint_sha256
-controller_package_sha256
-unit_generation
-loopback_gateway_sha256
-docker_gateway_ipv4
-license_mode
-budget_debit_id
-```
+`StartPermit` uses the exact Task 2 top-level schema. This task adds its bounded
+field validators and comparison semantics; it does not extend the wire record.
 
 `start-gate` exclusively creates `permit.lock`, rejects any stale `consuming.json`, atomically renames `active.json` to `consuming.json`, and reads/revalidates that stable file. A parsed permit moves to `consumed/{nonce}.json`; malformed bytes move to `rejected/{content_sha256}.json`. Missing, invalid, expired or already consumed permits fail and call fail-closed. A direct `systemctl --user start/restart` therefore succeeds only during the short window of an already confirmed, matching plan and consumes that authorization once.
 
@@ -1660,7 +2220,7 @@ Expected: offline tests pass and no user unit is linked or started.
 **Interfaces:**
 
 - Produces: `OfflineLicenseEvidence.verify(context: ClaimedApplyContext, config, runner, transport) -> OfflineLicenseEvidence`
-- Produces: immutable `BudgetDebit`, `BudgetRecoveryReceipt`, `BudgetStatus` and `GuardResult`
+- Produces: immutable typed `BudgetLedger`, `BudgetDebit`, `BudgetRecoveryReceipt`, `BudgetStatus` and `GuardResult`, all constrained by Task 2's fixed structural schemas
 - Produces: `OnlineBudget.debit(context: ClaimedApplyContext, now, fresh_volume_evidence) -> BudgetDebit`
 - Produces: `OnlineBudget.recover_unknown(context: ClaimedApplyContext, now, existing_volume_evidence) -> BudgetDebit`
 - Produces: `OnlineBudget.status(now) -> BudgetStatus`
@@ -1812,20 +2372,56 @@ If API is `activating`, the periodic guard may exit successfully only after prov
 
 - [ ] **Step 5: Implement the online budget ledger**
 
-Use canonical JSON with a compare-and-replace lock discipline and these fields:
+Use canonical JSON with a compare-and-replace lock discipline and the exact
+Task 2 `BudgetLedger` top-level schema. This task adds the bounded
+`BudgetDebit` row type inside `attempts`; it does not extend the ledger record.
+
+The only accepted continuity values are `CONTINUOUS` and
+`RECOVERED_UNKNOWN`. A demonstrably fresh volume creates exactly:
 
 ```text
-schema_version
+schema_version = 1
 zone = Asia/Shanghai
-local_date
+local_date = controlled_local_date(now) encoded YYYY-MM-DD
 controlled_limit = 10
 source_limit = 20
-attempts[]
-previous_ledger_sha256
-continuity_state
+attempts = []
+previous_ledger_sha256 = null
+continuity_state = CONTINUOUS
 ```
 
-Each attempt stores only debit ID, plan hash, timestamp, source fingerprint and result category; no key, response or license payload. `StateRecord` independently stores `online_budget_ledger_sha256`, `latest_budget_debit_id`, `latest_budget_sequence` and `latest_budget_local_date`. On every read, require the ledger bytes and latest row to match all four anchor fields; an older self-consistent ledger therefore cannot be replayed.
+A normal local-date rollover sets `previous_ledger_sha256` to the immediately
+prior State-anchored ledger hash and starts an empty `CONTINUOUS` day. A
+recovery ledger instead uses `RECOVERED_UNKNOWN`, retains the quarantined
+original hash only in its recovery receipt and starts with the one
+10-slot recovery debit; no accepted ledger persists an `UNKNOWN` continuity
+value.
+
+Each `BudgetDebit` row has this exact nested schema:
+
+```text
+debit_id
+sequence
+plan_sha256
+attempted_at
+local_date
+source_fingerprint
+action_code
+consumed_slots
+result_category
+```
+
+`debit_id` is an injectable non-secret 128-bit lowercase hexadecimal value;
+`attempted_at` is the same fixed-six-digit UTC timestamp used by Task 2;
+`local_date` is the controlled `Asia/Shanghai` date; `sequence` starts at 1
+per date. `result_category` is exactly `CONTROLLED_START` for action
+`license.debit-online-start` or `UNKNOWN_BUDGET_RECOVERY` for action
+`license.recover-unknown-budget`. Each attempt stores no key, response or
+license payload. `StateRecord` independently stores
+`online_budget_ledger_sha256`, `latest_budget_debit_id`,
+`latest_budget_sequence` and `latest_budget_local_date`. On every read, require
+the ledger bytes and latest row to match all four anchor fields; an older
+self-consistent ledger therefore cannot be replayed.
 
 Each ordinary attempt has `consumed_slots=1`. The only other accepted value is `consumed_slots=10` on a recovery debit tied to exact action `license.recover-unknown-budget`; budget checks sum slots, not row count.
 
@@ -1860,22 +2456,9 @@ The caller holds the exclusive ledger lock, atomically persists and reopens the 
 
 For an existing-volume `UNKNOWN` ledger, no normal operation may call `debit()`. A confirmed `repair` plan containing only the exact recovery/start prerequisites plus `license.recover-unknown-budget` may proceed while API/gateway are stopped:
 
-```text
-schema_version = 1
-record_type = cmms-budget-recovery-receipt
-status = PENDING | SUCCEEDED | FAILED
-plan_sha256
-local_date
-unknown_reason_code
-original_bytes_present
-original_ledger_sha256
-recovery_debit_id
-api_main_pid
-api_process_start_ticks
-safe_result_code
-created_at
-updated_at
-```
+The recovery receipt uses the exact Task 2 top-level schema. This task fixes
+`status` to `PENDING | SUCCEEDED | FAILED`, defines each nullable transition
+and does not extend the wire record.
 
 Nullable fields are explicit and become non-null only after their corresponding durable effect; terminal records are immutable.
 
@@ -2216,7 +2799,13 @@ def reconcile_password_change(
     return CredentialDecision.AMBIGUOUS
 ```
 
-Only a confirmed identity-write `PlannedAction` may promote the candidate for its exact bound target after successful authentication; it cannot promote another identity. Candidate removal requires `repair.discard-rejected-candidate` with that exact identity target. The decision function is pure, and target substitution or a missing planned action fails before file rename.
+Only a confirmed identity-write `PlannedAction` may promote the candidate for
+its exact bound target after successful authentication; it cannot promote
+another identity. Candidate removal requires a discard-only repair containing
+`repair.discard-rejected-candidate` with that exact identity target followed
+by `repair.stop-loopback-runtime`; it cannot share a plan with another
+bootstrap mutation. The decision function is pure, and target substitution or
+a missing planned action fails before file rename.
 
 The immutable plan binds each slot's starting lineage. Promotion opens the candidate with `O_NOFOLLOW`, retains that FD, verifies both logical paths against starting/current-lineage stats, and performs a same-directory atomic rename. After rename it fsyncs the directory, requires the candidate path absent, reopens current and requires the held candidate/current to have the same `dev`/`ino`, unchanged size/`mtime_ns` and stable bytes; `after.ctime_ns` must be greater than or equal to the pre-rename value because POSIX rename may advance ctime. The newly observed complete stat—not the stale pre-rename ctime—is appended in `CredentialSlotTransition` and becomes the lineage before any later identity action. Candidate discard similarly requires the plan-bound/lineage current to remain unchanged and records only the exact candidate disappearance.
 
@@ -2281,7 +2870,11 @@ Expected: fake HTTP tests pass; no real credential is read or API called.
 
 **Interfaces:**
 
-- Produces: enum `BootstrapState` and the `BOOTSTRAP_ACTIONS` subset of central `ActionCode`
+- Produces: enums `BootstrapState` and `InvitationProbeDisposition`, typed
+  `BootstrapReceipt` and the `BOOTSTRAP_ACTIONS` subset of central
+  `ActionCode`, constrained by Task 2's fixed structural schema
+- Produces: `BootstrapReceiptStore.load_current(state: StateRecord) -> BootstrapReceipt | None`
+- Produces: `BootstrapReceiptStore.append_and_anchor(context: ClaimedApplyContext, previous_state: StateRecord, next_receipt: BootstrapReceipt) -> tuple[BootstrapReceipt, StateRecord]`
 - Produces: `BootstrapTargetBindings.from_plan_bindings(bindings: BootstrapPlanBindings) -> BootstrapTargetBindings`
 - Produces: `BootstrapAssessment(state, live_ids, target_bindings, evidence_codes, repair_required)`
 - Produces: `BootstrapAssessment.from_receipt(snapshot, receipt, target_bindings) -> BootstrapAssessment` with no HTTP
@@ -2348,6 +2941,8 @@ def test_api_key_is_published_only_after_final_role_readback(
 Cover:
 
 - fresh bootstrap happy path and exact write/readback order;
+- no empty bootstrap receipt generation exists: the first persisted generation is `receipt_generation=1`, contains the pending `action_attempt` for the exact first planned non-idempotent action, has `origin_plan_sha256=last_plan_sha256` equal to the claimed plan and is State-selected before that request;
+- `readiness.require-api-loopback` is consumed once before the first discovery read/bootstrap write and proves only API PID/socket/fixed loopback health plus the license barrier; the complete `readiness.require-loopback` action occurs only after the planned bootstrap mutations and final reconciliation;
 - request not sent, deterministic rejection, response loss and process crash after every non-idempotent write;
 - superadmin, company admin and runtime user candidate/current promotion rules;
 - existing company/user/role/key metadata must match planned email/company/externalId/label and receipt IDs;
@@ -2373,6 +2968,26 @@ Cover:
 - CMMS search/readback exposes only the mapper-masked API-Key code and therefore can never reconstruct or prove the raw-key-to-ID relationship;
 - Phase 2 publication records and State-anchors the published env file stat before capture unlink, then separately records and anchors capture cleanup; crashes at every publication/cleanup boundary are reconciled without a second create or an unanchored publication;
 - cleanup-only repair is planned only when an already anchored publish/revoke result says cleanup is pending and the exact capture path is either still the historical file or absent; it performs zero authentication/HTTP/secret unwrap, unlinks only the exact present stat, proves absence, and rejects substitution/reappearance or a changed Phase 2 stat before receipt mutation;
+- bootstrap-mutation completion is exactly the suffix selected by Task 2's
+  frozen `(BootstrapState, probe disposition, slot class)` table and ends in
+  Phase 2 publish; tests cover every row, especially `ROLE_CREATED` with an
+  unused slot, terminal `ENFORCED`, `UNKNOWN_NO_USER` plus a distinct new slot,
+  and pending/uncertain plus the exact old slot, then reject a
+  skipped/interleaved state action, an unjustified omitted/repeated probe and
+  every revoke/create/publish or discard/completion mixture;
+- probe-history fold tests cover zero/one rows and the sole legal two-row
+  chain `UNKNOWN_NO_USER -> distinct new attempt`; while the second is pending
+  only its slot can be discovered, its terminal `ENFORCED` becomes effective,
+  a second `UNKNOWN_NO_USER` exhausts retry without authorizing a third, and
+  every reused/interleaved/third/post-terminal attempt is invalid;
+- a State-selected completed publication with capture cleanup proven complete
+  selects an empty-`C` readiness-only repair when completion reconciliation
+  remains; crash tests cover immediately after the publish anchor, capture
+  unlink, cleanup anchor, composite pre-open, dual enable, `GATEWAY_ENABLED`
+  State anchor, acceptance-receipt write and application terminal write, and
+  prove that cleanup-only (when needed) precedes a new readiness-only plan
+  without replaying publish or any bootstrap mutation;
+- discovery, revoke-only and discard-only each end with the planned untargeted `repair.stop-loopback-runtime`; tests inject failures before/after receipt anchor, unit stop, listener proof and State process clearing and require the application to remain `IN_PROGRESS` unless the proven stopped state is durable;
 - every planned bootstrap/repair action has the exact required target kind/ID; target substitution, a naked `ActionCode`, or a revoke without a company-scoped discovered API-Key ID is rejected;
 - API-Key targets reject UUIDs, zero, signs, leading zeros and values above Java `Long.MAX_VALUE`; the client sends only the parsed positive `Long`;
 - every reconciler entry receives explicit `CredentialSlots`; no planner or repair path reads identity credentials from ambient state;
@@ -2466,41 +3081,48 @@ def advance_state(
 
 The invitation-enforcement probe, Phase 2 key publication, discovery-only repair, revocation repair and capture-cleanup finalization action never advance the bootstrap state. Each requires its own confirmed targeted `PlannedAction` and durable pending attempt or exact local cleanup transition. The probe uses the exact fresh email and `InvitationProbeSlot` already bound into the confirmed plan; apply cannot generate or substitute a target. It can create a real user if the upstream guard is broken. Before the POST, atomically record slot ID and email hash in the pending attempt. Unexpected creation adds the returned/read-back user ID plus email hash to the receipt, retains the descriptor/password, leaves the gateway fail-closed and requires a separate cleanup design.
 
-Only a received exact `406` message followed by exact email search `totalElements=0` resolves the probe as enforced and permits cleanup in the original apply. If the response is lost, a zero-user search cannot distinguish a committed guard rejection from another uncertain outcome: retain the credential and pending attempt, stop, and never resend the same write. The next discovery-only repair must bind the old `InvitationProbeSlot` from that attempt, reject omission/slot substitution before HTTP, and use it only for authentication/search reconciliation. If that confirmed discovery again proves exact zero users, it terminally records `UNKNOWN_NO_USER`, securely retires the old owned slot and still does not mark the guard enforced; only a later plan with a different pre-created slot/email may send a new probe. If a user exists or the read is uncertain, preserve the old descriptor/password for the separately designed cleanup. After exact revoke/readback, append and State-select a new `BootstrapReceipt` generation that resolves the targeted attempt, adds the ID to bounded `revoked_api_key_ids`, clears the active `api_key_id`, and retains/returns state `RUNTIME_IDENTITY_CREATED`; the repair's `PlanApplicationRecord` is the terminal operation record. No separate undefined repair-receipt type is created. Recreating the API Key requires a separately generated and confirmed plan. `GATEWAY_ENABLED` is intentionally absent from this transition table because Task 9 lifecycle owns the final readiness, dual-listener proof and receipt update.
+Only a received exact `406` message followed by exact email search
+`totalElements=0` resolves the probe as enforced and permits cleanup in the
+original apply. If the response is lost, a zero-user search cannot distinguish
+a committed guard rejection from another uncertain outcome: retain the
+credential and pending attempt, stop, and never resend the same write. The next
+discovery-only repair must bind the old `InvitationProbeSlot` from that
+attempt, reject omission/slot substitution before HTTP, and use it only for
+authentication/search reconciliation. If that confirmed discovery again
+proves exact zero users, it records `UNKNOWN_NO_USER`, securely retires the old
+owned slot and still does not mark the guard enforced; only a later plan with a
+different pre-created slot/email may send a new probe. If a user exists or the
+read is uncertain, preserve the old descriptor/password for the separately
+designed cleanup.
+
+After exact revoke/readback, append and State-select a new `BootstrapReceipt`
+generation that resolves the targeted attempt, adds the ID to bounded
+`revoked_api_key_ids`, clears the active `api_key_id`, and retains/returns
+state `RUNTIME_IDENTITY_CREATED`. The same plan must then execute
+`repair.stop-loopback-runtime` and durably clear/prove the API/guard process
+identities before its `PlanApplicationRecord` may become terminal. No separate
+undefined repair-receipt type is created. Recreating the API Key requires a
+separately generated and confirmed stopped-state plan. `GATEWAY_ENABLED` is
+intentionally absent from this transition table because Task 9 lifecycle owns
+the final readiness, dual-listener proof and receipt update.
+
+`NEXT_STATE` is only the state-transition validator. It is not the repair
+suffix selector because the invitation probe and Phase 2 publication do not
+advance `BootstrapState`. `BootstrapAssessment.from_receipt` must derive the
+strict probe disposition from the exact action-attempt rows and apply Task 2's
+frozen receipt/probe/slot table. In particular, `ROLE_CREATED` with a required
+new probe starts at `BOOTSTRAP_PROBE_INVITATION`, while terminal `ENFORCED`
+starts at `BOOTSTRAP_CREATE_INVITATION`; a pending/uncertain old probe emits
+discovery-only, and `UNKNOWN_NO_USER` can probe again only with a distinct
+unused slot under the sole legal one-row history. The strict fold selects the
+second attempt when present and never authorizes a third. No generic “next
+state” fallback is allowed.
 
 - [ ] **Step 4: Implement receipt-first reconciliation**
 
-The bootstrap receipt stores only:
-
-```text
-schema_version = 1
-record_type = cmms-bootstrap-receipt
-receipt_generation
-origin_plan_sha256
-last_plan_sha256
-state
-super_admin_user_id
-company_id
-company_settings_id
-organization_admin_user_id
-role_id
-invitation_email_hash
-runtime_user_id
-api_key_id
-api_key_label
-api_key_capture_attempt_id
-api_key_capture_status
-api_key_capture_file
-phase2_publish_status
-phase2_env_file
-api_key_capture_cleared
-revoked_api_key_ids
-action_attempts
-probe_user_id
-action_result_codes
-created_at
-updated_at
-```
+The bootstrap receipt uses only the exact Task 2 top-level schema. This task
+adds the bounded action-attempt row, capture/publish cross-product and
+transition validators; it does not extend the wire record.
 
 `receipt_generation` starts at `1` and increments exactly once from the State-selected immutable predecessor; it is not chosen by scanning filenames. `origin_plan_sha256` is immutable; `last_plan_sha256` advances only with a claimed bootstrap/repair plan. `action_attempts` is a bounded tuple of `plan_sha256`, `action_code`, `target_kind`, `target_id`, random `attempt_id`, `started_at`, safe `result_code`, optional `credential_transition`, and optional invitation-probe `slot_id`/`email_hash`. Atomically append the pending row by creating and State-anchoring a new immutable receipt generation before each non-idempotent request, then resolve that same row in another immutable generation only after deterministic readback. The strict loader validates the referenced plan hash, target policy and credential-lineage transition for every row; a repair may append a row under its new plan hash but may never rewrite an earlier attempt or substitute its target. Tests mutate the plan/target bindings and every before/after slot stat independently and require rejection before HTTP. This timestamp is the only local input allowed when deciding whether an uncertain invitation attempt has crossed the API's seven-day visibility window. `probe_user_id` is non-null only when an unexpected created user was formally read back; receipt never stores probe email/password plaintext.
 
@@ -2518,11 +3140,27 @@ A crash before the receipt and State anchor are both durable makes any `CAPTURED
 
 Phase 2 publication is a two-anchor protocol. The targeted publisher requires either the same-apply `AnchoredApiKeyCapture` or a continuation lineage initialized from the plan-bound capture, reopens that exact capture and current Phase 2 env, atomically writes/reopens the env, and compares its strict credential envelope with the captured raw value only in memory. It then appends `phase2_publish_status=PUBLISHED` with the resulting `phase2_env_file` stat while `api_key_capture_cleared=false`, CAS-selects that immutable generation in `StateRecord`, and advances/reopens/cross-checks the lineage. Only then may the same planned publish action unlink the exact lineage-bound capture and fsync the directory; it finally appends `api_key_capture_cleared=true`, CAS-selects that generation and advances cleanup. A crash after env write but before the first publish anchor can only be reconciled by a new plan that binds the current env and still-State-anchored capture and proves their raw values equal; a crash between the publish anchor, unlink and cleanup anchor uses the retained immutable published generation to run only cleanup.
 
-Exact revoke uses the same ordering: after company-scoped target verification, revoke/readback is recorded in an immutable State-selected generation before the owned capture is removed; capture removal and its final receipt generation are separately anchored. If cleanup is still pending after an anchored publish/revoke, a new plan emits targeted `repair.finalize-api-key-capture-cleanup` with `ApiKeyCleanupPlanBinding`. Apply requires the observed file to be the historical exact stat or absent; if present it opens without unwrapping, rechecks/unlinks/fsyncs by descriptor identity, otherwise it proves continued absence. It then appends/selects only the cleanup generation, with zero authentication or HTTP. A substituted/reappearing file or changed published Phase 2 stat is `UNKNOWN`. A crash anywhere preserves enough `PENDING`/`CAPTURED`, attempt, immutable receipt and State evidence to choose reconciliation, never to infer success from a label or file existence.
+Exact revoke uses the same ordering: after company-scoped target verification, revoke/readback is recorded in an immutable State-selected generation before the owned capture is removed; capture removal and its final receipt generation are separately anchored. If cleanup is still pending after an anchored publish/revoke, a new plan emits exactly two plan-visible rows—untargeted `gateway.fail-closed`, then `repair.finalize-api-key-capture-cleanup` targeted at `receipt:cmms-bootstrap`—with `ApiKeyCleanupPlanBinding`. After the first row proves the external listener absent, lifecycle performs the implicit application claim and zero-HTTP local preflight before dispatching the second row; neither barrier is serialized as a fake action. Apply requires the observed file to be the historical exact stat or absent; if present it opens without unwrapping, rechecks/unlinks/fsyncs by descriptor identity, otherwise it proves continued absence. It then appends/selects only the cleanup generation, with zero startup, license, permit, authentication, HTTP, raw unwrap, publish/revoke, readiness or dual-gateway action. A substituted/reappearing file or changed published Phase 2 stat is `UNKNOWN`. A crash anywhere preserves enough `PENDING`/`CAPTURED`, attempt, immutable receipt and State evidence to choose reconciliation, never to infer success from a label or file existence.
 
 Never store email plaintext if a stable label/hash is sufficient, and never store JWT/password/raw API Key. Every reconciliation entry that selects or validates a remote action authenticates through current/candidate slots and reads live metadata before selecting missing actions; a receipt cannot prove a remote fact by itself. The cleanup-only finalizer is the deliberate exception: it selects no remote action and reads only the State-selected local receipt lineage plus exact capture/Phase 2 file presence stats, with zero signin or HTTP.
 
-`BootstrapReconciler.inspect` is an apply-time interface whose first argument must be the opaque `ClaimedApplyContext`. It verifies that `inspection_action` is an exact row in that context's confirmed plan and that ActionRegistry marks the row as permitting reconciliation for the current operation; discovery uses only `repair.capture-bootstrap-discovery`, ordinary readiness uses its planned loopback-readiness row, and a bootstrap write may use only its exact next targeted row. A forged/missing context or wrong row fails before transport. Signin/readback may update CMMS-owned `lastLogin`; public `plan` and `status` cannot construct the capability and never call it. Planning uses only `BootstrapAssessment.from_receipt` plus local descriptor/config/source evidence. A missing live target therefore selects discovery-only repair instead of pre-confirmation authentication.
+`BootstrapReconciler.inspect` is an apply-time interface whose first argument
+must be the opaque `ClaimedApplyContext`. Lifecycle must already have consumed
+the distinct planned `readiness.require-api-loopback` row immediately before
+calling this interface; the fixed transport rechecks the bound loopback
+gateway generation and current PID/start identity before each send. The
+reconciler verifies that `inspection_action` is an exact row in that context's
+confirmed plan and that ActionRegistry marks the row as permitting
+reconciliation for the current operation; discovery uses only
+`repair.capture-bootstrap-discovery`, composite ordinary readiness uses its
+planned `readiness.require-loopback` row, and a bootstrap write may use only
+its exact next targeted row. A forged/missing context, stale API-loopback
+binding or wrong row fails before transport. Signin/readback may update
+CMMS-owned `lastLogin`; public `plan` and `status` cannot construct the
+capability and never call it. Planning uses only
+`BootstrapAssessment.from_receipt` plus local descriptor/config/source
+evidence. A missing live target therefore selects discovery-only repair
+instead of pre-confirmation authentication.
 
 - [ ] **Step 5: Implement identity, company, role, and invitation actions**
 
@@ -2615,7 +3253,16 @@ An invitation older than seven days with no created runtime user cannot be prove
 
 For an API Key label found after lost response, search within the current company, require exact user/label ownership, and plan deletion by that ID. Since `GET/DELETE /api-keys/{id}` lacks a company ownership check, never use an ID not obtained and verified through company-scoped search in the same plan.
 
-If compensation stopped the API and neither the receipt nor current read-only discovery contains the required live target ID, the planner must not guess or authorize a label-based delete. It emits only a targeted `repair.capture-bootstrap-discovery` plan that restores the proven existing API in loopback mode, authenticates through explicit slots, performs formal API reads, atomically records the discovered IDs/evidence under that plan hash, and stops before every CMMS write and before dual gateway. A later `plan` invocation may then bind the exact discovered ID and must produce a new hash for the mutating repair.
+If compensation stopped the API and neither the receipt nor current read-only
+discovery contains the required live target ID, the planner must not guess or
+authorize a label-based delete. Its repair body contains only targeted
+`repair.capture-bootstrap-discovery` followed by
+`repair.stop-loopback-runtime`: restore the proven existing API in loopback
+mode, authenticate through explicit slots, perform formal API reads,
+atomically record the discovered IDs/evidence under that plan hash, then stop
+and clear the runtime before every CMMS write and before dual gateway. A later
+`plan` invocation may bind the exact discovered ID only from that proven
+stopped state and must produce a new hash for the mutating repair.
 
 - [ ] **Step 9: Run the bootstrap slice tests**
 
@@ -2683,16 +3330,16 @@ Expected: the commit contains only bootstrap control code and offline tests; no 
 
 - Produces: `PlanningRequest(operation, profile, license_mode)`
 - Produces: `Preflight.discover(request: PlanningRequest, snapshot: DeploymentSnapshot, current_state: StateRecord | None) -> PreflightAssessment`
-- Produces: `PlanningAssessment(preflight, bootstrap, bootstrap_bindings, target_bindings, evidence_codes)`
+- Produces: `PlanningAssessment(preflight, bootstrap, bootstrap_bindings, target_bindings, projected_bootstrap_state, phase2_seed_receipt_absent, evidence_codes)`
 - Produces: `PlanDiscovery.discover(request, snapshot, current_state, preflight, slots: CredentialSlots | None, invitation_probe: InvitationProbeSlot | None) -> PlanningAssessment`
 - Produces: `OperationPlanner.plan(assessment: PlanningAssessment) -> Sequence[PlannedAction]` as an immutable tuple
 - Produces: `PlanBuilder.build(request: PlanningRequest, snapshot: DeploymentSnapshot, current_state: StateRecord | None, slots: CredentialSlots | None, invitation_probe: InvitationProbeSlot | None, now, plan_nonce) -> DeploymentPlan`
 - Produces: `Preflight.inspect(plan: DeploymentPlan, current_state: StateRecord | None) -> PreflightReport`
-- Produces: `PreflightReport.require_exact(operation: Operation, planned_actions: Sequence[PlannedAction], expected_actions: Sequence[PlannedAction]) -> None`
+- Produces: `PreflightReport.require_exact(plan: DeploymentPlan, expected_actions: Sequence[PlannedAction]) -> None`; the report owns the rebuilt `PlanningAssessment` used for profile/license/binding comparison
 - Produces: immutable `PreflightReport`, `ApplyResult` and `StatusReport`
 - Produces: `IndeterminateCommitError` and immutable `CompensationResult(known_safe, safe_codes)`
 - Consumes: Task 2 `claim_plan_application(plan, plans_dir, lease, fail_closed) -> ClaimedApplyContext` as the sole production post-claim capability path; all four arguments must carry the same live reservation/plan/lease/gateway generation
-- Produces: immutable `LoopbackReadinessEvidence` and `LifecycleReadinessEvidence(safe_codes, acceptance_receipt)`
+- Produces: immutable `ApiLoopbackEvidence`, `LoopbackReadinessEvidence` and `LifecycleReadinessEvidence(safe_codes, acceptance_receipt)`
 - Produces: `ReadinessPort` protocol plus a conservative `UnavailableReadinessPort`; Task 10 supplies the live-capable implementation
 - Produces: `LifecycleDependencies(plans_dir, gateway, preflight, planner, compose, systemd, license, bootstrap, readiness, records)`
 - Produces: `Lifecycle.apply(lease: DeploymentWriteLease, confirmed_plan: ConfirmedDeploymentPlan) -> ApplyResult`
@@ -2741,13 +3388,32 @@ Tests must assert:
 - public construction of `ClaimedApplyContext` fails; bootstrap reconciliation with only `DeploymentPlan`/`ConfirmedDeploymentPlan`, a wrong inspection row or an unclaimed application is rejected before HTTP;
 - the canonical plan contains the exact `BootstrapPlanBindings` projection supplied by `PlanningAssessment`; changing/omitting any action-required binding invalidates its hash or fails registry validation before write;
 - repeating discovery over unchanged evidence produces byte-identical action/binding projections; with the same injected clock/nonce the canonical hash is identical, while every public regeneration uses a fresh nonce/new hash and any changed finding, target or credential-slot stat also changes/refuses the plan before apply;
+- one immutable `PlanningAssessment` always produces one canonically ranked
+  tuple; callers cannot inject a serialized branch or arbitrary actions, and
+  tests exercise active/stopped start, all four high-level repair forms and
+  completion/readiness-only/revoke-only/discard-only bootstrap subgrammars
+  through their distinguishing evidence;
 - fresh bootstrap planning works without a live CMMS API and binds semantic identity/role/key targets rather than fabricated company/user/settings/role IDs;
-- repair planning returns mutating targeted actions only when every required live target is bound by an earlier confirmed discovery receipt; otherwise it emits only `repair.capture-bootstrap-discovery`, which cannot call a CMMS write or enable dual gateway;
+- repair planning returns mutating targeted actions only when every required live target is bound by an earlier confirmed discovery receipt; otherwise its only repair body is targeted `repair.capture-bootstrap-discovery` followed by `repair.stop-loopback-runtime`, with no CMMS write or dual gateway;
 - `stop` builds from exact local ownership with `slots=None` and `invitation_probe=None`, even when bootstrap env/credential files are corrupt; bootstrap/identity repair requiring signin rejects missing `CredentialSlots`, while fresh bootstrap, an action tuple containing `BOOTSTRAP_PROBE_INVITATION`, or discovery of a receipt-bound unresolved probe requires the exact `InvitationProbeSlot`;
 - a receipt with the invitation probe already resolved/cleaned and a later lost API-Key response can plan the exact targeted revoke with `invitation_probe=None`;
 - unresolved-probe discovery rejects an omitted/substituted old slot before HTTP, never resends signup, and only after terminal zero-user reconciliation may a later plan bind a new slot;
 - every bootstrap/repair receipt change is receipt-first then CAS-anchored into `StateRecord`; crash injection before/after each receipt, state and application write leaves planning `UNKNOWN` and permits only a new discovery/reconciliation repair;
-- `repair.finalize-api-key-capture-cleanup` is emitted only for an anchored publish/revoke with cleanup pending and an observed capture equal to the historical exact stat or absent; present-file tests require descriptor-bound unlink, directory fsync and proven absence, absent-file tests require continued absence, and both contain no API write/readiness/raw-unwrap action and exact-compare the Phase 2 stat when applicable before their sole receipt/State update;
+- `repair.finalize-api-key-capture-cleanup` is emitted only for an anchored publish/revoke with cleanup pending and an observed capture equal to the historical exact stat or absent; its only plan-visible rows are fail-close then targeted cleanup, while claim and local preflight occur as implicit barriers between them; present-file tests require descriptor-bound unlink, directory fsync and proven absence, absent-file tests require continued absence, and both contain no startup/license/permit/API/readiness/dual/raw-unwrap action and exact-compare the Phase 2 stat when applicable before their sole receipt/State update;
+- acceptance-profile fresh bootstrap, bootstrap-mutation completion and
+  completed-publication readiness-only repair plan exactly one MinIO probe only
+  when the Phase 2 seed receipt is absent, the State-selected/projected state
+  is `FINAL_PERMISSIONS_VERIFIED` or `GATEWAY_ENABLED` and the complete composite
+  pre-open/dual/post-open rows are present; an ineligible acceptance bootstrap
+  is rejected, while development bootstrap and discovery/revoke-only/
+  discard-only/budget-recovery/cleanup repair contain no acceptance action or
+  receipt path;
+- readiness-only planning is rejected unless every conjunct of Task 2's
+  completed-publication predicate reopens exactly, and tests cover publish
+  cleanup completed before readiness, cleanup-only followed by readiness-only,
+  crash after each pre-open/dual/State/receipt/application boundary, no
+  bootstrap mutation or second publish, and rejection of an already terminal
+  healthy deployment in favor of ordinary status/start;
 - preflight reports exact port conflicts without killing or replacing a process;
 - fresh bootstrap may proceed with missing toolchains/images/services only when the confirmed action list contains each exact install/pull/create action;
 - start/restart rejects the same missing prerequisite instead of silently adding an action;
@@ -2760,6 +3426,7 @@ Tests must assert:
 - after gateway fail-close is proven, the application claim is durably `IN_PROGRESS` before any other effect, and a crash consumes that plan so recovery requires a newly inspected plan;
 - the first service-affecting event for every apply is `gateway.fail_closed`;
 - no API permit is created before source/toolchain/config/Compose/unit/license/budget evidence passes;
+- fresh bootstrap `process.start-api` refuses a plan missing the later `cmms.initialize-fresh-database` authorization row; the row is dispatched after API start only to verify the initializer side effect, performs zero new write and must pass before frontend start/API-loopback readiness;
 - no dual gateway occurs before API PID/readiness, identity reconciliation and operation-specific checks pass;
 - no receipt reaches `GATEWAY_ENABLED` unless dual gateway activation and its listener/path proof both succeeded;
 - `start`, `restart-api`, `restart-frontend`, `stop` and `switch-license` contain zero signup/password/invite/role/API-Key writes;
@@ -2821,7 +3488,9 @@ PlanningRequest + immutable config/source/slot snapshots + current state
      )                                               # local/receipt only; zero HTTP
   -> immutable PlanningAssessment
   -> OperationPlanner.plan(assessment)               # exact PlannedAction tuple
-  -> ActionRegistry.validate(operation, actions)
+  -> ActionRegistry.validate(
+       operation, profile, license_mode, bootstrap_bindings, actions
+     )
   -> DeploymentPlan.create(
        snapshot, operation, profile, license_mode,
        bootstrap_bindings, actions, now, fresh_plan_nonce
@@ -2829,11 +3498,86 @@ PlanningRequest + immutable config/source/slot snapshots + current state
   -> canonical write + SHA-256 + stop
 ```
 
-`PlanDiscovery` never opens HTTP and never calls `BootstrapReconciler.inspect`. It consumes the exact immutable `PreflightAssessment` plus local config/descriptor snapshots; when applicable it loads only the immutable bootstrap receipt generation selected by the current State pointer and calls `BootstrapAssessment.from_receipt`. It projects the typed slots/probe plus action-dependent `ApiKeyCapturePlanBinding` or `ApiKeyCleanupPlanBinding` into `PlanningAssessment.bootstrap_bindings`, and `PlanBuilder` passes that exact value to `DeploymentPlan.create`; none is left as transient planner state. When preflight proves the Compose project/owned volume is genuinely absent/new, it creates the well-known fresh assessment from the canonical identity/role/key/probe targets and reviewed initializer manifest; this path requires no fabricated live ID and both API-Key file bindings are null. Bootstrap/identity repair that will authenticate requires explicit `CredentialSlots`. `InvitationProbeSlot` is required for fresh bootstrap, for an action tuple containing `BOOTSTRAP_PROBE_INVITATION`, and for discovery-only repair of a receipt-bound unresolved probe, where it must be the exact old slot and cannot authorize another signup. After a resolved/terminally retired probe has been safely deleted, an unrelated API-Key/candidate repair accepts `invitation_probe=None`; only a later new-probe plan binds a new slot. `STOP` requires both typed inputs and `bootstrap_bindings` to be `None`. If a required live deletion/revocation target is absent from the confirmed-discovery receipt, the only legal output is the startup plus targeted `repair.capture-bootstrap-discovery` sequence.
+`PlanDiscovery` never opens HTTP and never calls `BootstrapReconciler.inspect`.
+It consumes the exact immutable `PreflightAssessment` plus local
+config/descriptor snapshots; when applicable it loads only the immutable
+bootstrap receipt generation selected by the current State pointer and calls
+`BootstrapAssessment.from_receipt`. It projects the typed slots/probe plus
+action-dependent `ApiKeyCapturePlanBinding` or `ApiKeyCleanupPlanBinding` into
+`PlanningAssessment.bootstrap_bindings`, and `PlanBuilder` passes that exact
+value to `DeploymentPlan.create`; none is left as transient planner state.
+When preflight proves the Compose project/owned volume is genuinely
+absent/new, it creates the well-known fresh assessment from the canonical
+identity/role/key/probe targets and reviewed initializer manifest; this path
+requires no fabricated live ID and both API-Key file bindings are null.
+Bootstrap/identity repair that will authenticate requires explicit
+`CredentialSlots`. `InvitationProbeSlot` is required for fresh bootstrap, for
+an action tuple containing `BOOTSTRAP_PROBE_INVITATION`, and for
+discovery-only repair of a receipt-bound unresolved probe, where it must be the
+exact old slot and cannot authorize another signup. After a resolved or
+terminally retired probe has been safely deleted, an unrelated API-Key or
+candidate repair accepts `invitation_probe=None`; only a later new-probe plan
+binds a new slot. `STOP` requires both typed inputs and `bootstrap_bindings` to
+be `None`. If a required live deletion/revocation target is absent from the
+confirmed-discovery receipt, the only legal output is the exact startup plus
+targeted `repair.capture-bootstrap-discovery` and final
+`repair.stop-loopback-runtime` sequence.
 
-Only that separately confirmed discovery-only apply may invoke `BootstrapReconciler.inspect`: after fail-close, application claim, local preflight replay, exact startup actions and loopback proof, its handler signs in, performs formal reads, records the safe IDs/evidence and stops before every CMMS API write and dual gateway. The next public plan consumes that receipt without HTTP and emits a new hash.
+`OperationPlanner` is the sole contextual branch selector. It starts with the
+exact required row set from Task 2's branch-cardinality table, unions every
+branch-allowed `(code,target)` whose immutable finding is exactly
+`SATISFIABLE_BY_ACTION`, rejects every required finding outside that allowlist,
+then sorts once by the frozen rank and same-code target key. It never chooses
+between alternatives. For one immutable `PlanningAssessment`, these inclusion
+rules produce exactly one action tuple. The private Task 2 classifier
+recognizes active/stopped start; discovery,
+completion/readiness-only/revoke-only/discard-only bootstrap repair;
+budget-recovery; and capture-cleanup repair. No branch value enters the plan
+schema. Active process state, owned-volume
+freshness, State-selected receipt facts and projected bootstrap state are
+inputs to the assessment, not to `ActionRegistry`. Callers may request an
+operation/profile/license mode but cannot supply a branch or arbitrary action
+tuple.
 
-`Preflight.inspect` is the apply-time local/receipt replay of the same zero-HTTP discovery rules after fail-close. It receives the completed immutable plan only to validate its bound snapshots, never to synthesize actions. It recomputes the current `PlanningAssessment` and expected action tuple; `require_exact` rejects a missing, extra, reordered or target-substituted row before toolchain installation, Compose, systemd, budget debit, permit or HTTP. The always-first fail-close row is normalized in both planning and replay so the deliberate gateway state change does not create false drift. Operation handlers perform any plan-authorized formal API authentication only after this exact-action gate.
+For fresh `BOOTSTRAP`, `REPAIR_BOOTSTRAP_MUTATION_COMPLETION` and
+`REPAIR_BOOTSTRAP_READINESS_ONLY`, the planner includes exactly one MinIO route
+probe iff profile is `ACCEPTANCE`, the Phase 2 seed receipt is absent, the
+State-selected/projected bootstrap state is
+`FINAL_PERMISSIONS_VERIFIED` or `GATEWAY_ENABLED`, and the tuple contains the
+complete composite
+pre-open, dual-enable and post-open sequence. Readiness-only additionally must
+satisfy every conjunct of Task 2's completed-publication predicate. A fresh
+acceptance bootstrap that does not satisfy all four common conditions is
+rejected; it is not silently planned as operational. Development bootstrap
+and discovery/revoke-only/discard-only/budget-recovery/capture-cleanup repair
+contain no acceptance action or receipt path. Task 10 executes only a probe
+row already produced here and cannot add one.
+
+Only that separately confirmed discovery-only apply may invoke
+`BootstrapReconciler.inspect` for unrestricted target discovery: after
+fail-close, application claim, local preflight replay, exact startup actions
+and API-loopback proof, its handler signs in, performs formal reads, records
+the safe IDs/evidence, State-anchors them, executes the planned
+`repair.stop-loopback-runtime` row and proves the API/guard runtime stopped
+before returning. It performs no CMMS write or dual gateway. The next public
+plan consumes that receipt without HTTP and emits a new hash from a proven
+stopped state.
+
+`Preflight.inspect` is the apply-time local/receipt replay of the same zero-HTTP
+discovery rules after fail-close and application claim. It receives the
+completed immutable plan only to validate its bound snapshots, never to
+synthesize actions. It recomputes the current `PlanningAssessment` and reruns
+`OperationPlanner`. The resulting `PreflightReport` owns that rebuilt
+assessment; `require_exact(plan, expected_actions)` exact-compares actions,
+targets, request operation/profile/license, bootstrap bindings and the
+assessment-derived acceptance predicates. It rejects a missing, extra,
+reordered or target-substituted row before toolchain installation, Compose,
+systemd, budget debit, permit or HTTP. The always-first fail-close row is
+normalized in both planning and replay so the deliberate gateway state change
+does not create false drift. For cleanup-only repair, claim and this local
+replay are implicit barriers between its two plan-visible rows. Operation
+handlers perform any plan-authorized formal API authentication only after this
+exact-action gate.
 
 `FailClosedEvidence` binds the verified gateway generation/address/listener result and is not serializable. Lifecycle passes that evidence, the still-current `ConfirmedDeploymentPlan`, the fixed plans directory and the same live `DeploymentWriteLease` into Task 2's four-argument `claim_plan_application()` API; the function verifies the plan's embedded reservation/lease identity, transitions/fsyncs/reopens `IN_PROGRESS` and directly returns the bound context. There is no second lifecycle mint. The context exposes its application handle and an action-checking method but not its private token. All handler, BootstrapReconciler, bootstrap applier, license debit, permit, Compose/systemd and receipt-mutation adapters receive this context or a still narrower capability derived from it. Public plan/status code has no importable constructor path.
 
@@ -2874,8 +3618,7 @@ class Lifecycle:
                 preflight.planning_assessment
             )
             preflight.require_exact(
-                confirmed_plan.plan.operation,
-                confirmed_plan.plan.actions,
+                confirmed_plan.plan,
                 expected_actions,
             )
             handlers = {
@@ -2890,8 +3633,7 @@ class Lifecycle:
             result = handlers[confirmed_plan.plan.operation](context)
             self.dependencies.records.mark_plan_terminal(
                 application,
-                "SUCCEEDED",
-                result.safe_codes,
+                PlanApplicationState.SUCCEEDED,
             )
             return result
         except IndeterminateCommitError:
@@ -2909,8 +3651,7 @@ class Lifecycle:
                 ) from None
             self.dependencies.records.mark_plan_terminal(
                 application,
-                "FAILED",
-                ("APPLY_FAILED", *compensation.safe_codes),
+                PlanApplicationState.FAILED,
             )
             raise
 ```
@@ -2935,10 +3676,17 @@ Public `apply` uses:
 
 If initial fail-close cannot safely reload, stop Nginx. Failure to prove the gateway listener absent aborts before every other state action.
 
-At Task 9, lifecycle depends only on the `ReadinessPort` protocol. Offline tests inject a scripted implementation; the public CLI wires `UnavailableReadinessPort`, which always leaves gateway fail-closed with `CMMS-E095 readiness-not-implemented`. Task 10 replaces that binding with `ReadinessChecker`; Task 9 must not fabricate a passing readiness result.
+At Task 9, lifecycle depends only on the `ReadinessPort` protocol. Offline tests inject a scripted implementation; the public CLI wires `UnavailableReadinessPort`, which always leaves gateway fail-closed with `CMMS-E095 readiness-not-implemented`. Task 10 replaces that binding with `LifecycleReadinessAdapter` backed by `ReadinessChecker`; Task 9 must not fabricate a passing readiness result.
 
 ```python
 class ReadinessPort(Protocol):
+    def require_api_loopback(
+        self,
+        context: ClaimedApplyContext,
+        state: StateRecord,
+    ) -> ApiLoopbackEvidence:
+        raise NotImplementedError
+
     def require_loopback(
         self,
         context: ClaimedApplyContext,
@@ -2956,6 +3704,17 @@ class ReadinessPort(Protocol):
 
 
 class UnavailableReadinessPort:
+    def require_api_loopback(
+        self,
+        context: ClaimedApplyContext,
+        state: StateRecord,
+    ) -> ApiLoopbackEvidence:
+        raise DeploymentError(
+            "CMMS-E095",
+            "readiness implementation is not available",
+            95,
+        )
+
     def require_loopback(
         self,
         context: ClaimedApplyContext,
@@ -2976,6 +3735,15 @@ class UnavailableReadinessPort:
         return self.require_loopback(context, state)
 ```
 
+Fresh bootstrap and the two repair classes that perform discovery/bootstrap
+API work call `require_api_loopback()` immediately before their first formal
+read or write. It requires the exact planned
+`readiness.require-api-loopback` row, binds the current API PID/start ticks,
+socket owner, fixed loopback gateway generation, `/api/health-check` result and
+license-mode barrier, and performs no authentication or domain query. A PID,
+socket or gateway-generation change invalidates the evidence and aborts before
+HTTP. It is never reused as composite pre-open evidence.
+
 Each start-capable handler keeps the returned pre-open evidence as a local value, enables dual gateway, passes that exact value into `require_dual()`, and persists `acceptance_receipt` only when the returned evidence contains one. Task 9 scripted ports always return `acceptance_receipt=None`; Task 10 constructs the typed receipt. Lifecycle—not the readiness adapter—owns the sole atomic receipt write, so no hidden cache or partial readiness result can become durable evidence.
 
 - [ ] **Step 5: Implement bootstrap and start operation sequences**
@@ -2990,9 +3758,13 @@ render/link units -> license capability/budget ->
 offline: verify license file, network-policy capability and loaded API/timer relationships ->
 online: durably debit the controlled-start budget ->
 permit -> start API (offline dependency activates timer before start-gate) ->
-start frontend -> API active -> offline full guard -> loopback readiness -> bootstrap state machine ->
-pre-open readiness -> dual gateway -> post-open dual listeners/paths ->
-atomically record GATEWAY_ENABLED; acceptance receipt only if clean
+verify the plan-authorized ApplicationInitializer startup result ->
+start frontend -> API active -> offline full guard ->
+API-loopback prerequisite (PID/socket/fixed health; no domain auth) ->
+bootstrap state machine -> composite pre-open readiness ->
+dual gateway -> post-open dual listeners/paths ->
+atomically record GATEWAY_ENABLED; acceptance receipt only for a confirmed
+acceptance tuple containing the already planned MinIO probe
 ```
 
 `start` first selects exactly one of two branches after fail-close and preflight:
@@ -3027,27 +3799,73 @@ The offline timer cannot perform its full API check while no API MainPID exists.
 
 `restart-api` rebuilds and starts exactly one new API MainPID; in offline mode it validates the timer/dependency before the permit, lets the API start transaction activate the timer before `ExecStartPre`, and runs the full guard after API activation. `restart-frontend` restarts only the frontend after closing the gateway. `stop` closes/stops Nginx first, stops frontend/API/guard/timer, and then uses Compose `stop`, preserving volumes and credential slots. `switch-license` closes the gateway, stops API and guard/timer, removes the old loaded profile, verifies the target unit/network/budget control, then follows the API start sequence with one new permit.
 
-`repair` is not allowed to assume a live API after bootstrap compensation. It has three disjoint, plan-hashed forms:
+`repair` is not allowed to assume a live API after bootstrap compensation. It has four disjoint, plan-hashed forms selected deterministically from `PlanningAssessment`:
+
+Except for capture-cleanup, every repair subgrammar requires planning and
+apply-time preflight to prove the managed API stopped with no active/consuming
+permit before its mandatory `L`/`N` startup bundle. An active or uncertain API
+is rejected; it is never silently reused or restarted. Discovery,
+revoke-only and discard-only close that bundle again with the planned `R`
+action, so any later repair is also generated from proven stopped state.
 
 ```text
 bootstrap target discovery:
   fail-close and claim -> verify/start PostgreSQL + MinIO + loopback Nginx ->
   verify/install the exact existing control/toolchain/build/unit prerequisites ->
   stopped-API license path -> one permit -> one API MainPID ->
+  API-loopback prerequisite (PID/socket/fixed health; no domain auth) ->
   authenticate with explicit current/candidate slots -> formal API reads only ->
   execute repair.capture-bootstrap-discovery against receipt:cmms-bootstrap ->
   atomically capture safe live IDs/evidence -> CAS-anchor receipt SHA in StateRecord ->
-  reopen/cross-check receipt + state -> remain loopback-only and halt;
+  reopen/cross-check receipt + state ->
+  execute repair.stop-loopback-runtime -> prove API/frontend/guard/timer stopped
+  while PostgreSQL/MinIO and loopback Nginx remain -> halt;
   no CMMS write, API-Key delete/create, dual gateway or acceptance receipt
 
 bootstrap/API-Key repair:
   fail-close and claim -> verify/start PostgreSQL + MinIO + loopback Nginx ->
   verify/install the exact existing control/toolchain/build/unit prerequisites ->
   stopped-API license path (offline capability, or one ordinary online debit) ->
-  one permit -> one API MainPID -> start/verify frontend -> loopback readiness ->
-  formal API reconciliation -> only the named bootstrap/revocation actions ->
-  final reconciliation -> pre-open evidence -> dual -> post-open evidence ->
-  optional clean acceptance receipt
+  one permit -> one API MainPID -> exactly one of:
+
+  contiguous completion:
+    start/verify frontend ->
+    API-loopback prerequisite (PID/socket/fixed health; no domain auth) ->
+    formal API reconciliation -> execute only the frozen
+    receipt/probe/slot-matched contiguous bootstrap suffix ending in
+    Phase 2 publish ->
+    final reconciliation -> composite pre-open evidence -> dual ->
+    post-open evidence ->
+    acceptance receipt only for acceptance profile when Phase 2 seed receipt
+    is absent, projected state is FINAL_PERMISSIONS_VERIFIED and the complete
+    pre-open/dual/post-open plus MinIO-probe tuple was already planned
+
+  completed-publication readiness-only:
+    require the exact State-selected PUBLISHED + capture-cleared receipt,
+    current Phase 2 env stat, terminal ENFORCED probe and completion gap ->
+    start/verify frontend ->
+    API-loopback prerequisite (PID/socket/fixed health; no domain auth) ->
+    perform formal read-only identity/API-Key/license/domain reconciliation
+    with no bootstrap or repair mutation ->
+    composite pre-open evidence -> dual -> post-open evidence ->
+    State-anchor GATEWAY_ENABLED and, only when the confirmed acceptance tuple
+    already contains its MinIO probe, persist the acceptance receipt;
+    no password/signup/invitation/role/API-Key create/finalize/publish,
+    discovery, revoke, discard, runtime-stop or capture-cleanup action
+
+  revoke-only:
+    API-loopback prerequisite -> company-scoped exact-ID verification ->
+    execute only repair.revoke-uncaptured-api-key -> readback ->
+    immutable receipt + State anchor returning to RUNTIME_IDENTITY_CREATED ->
+    repair.stop-loopback-runtime -> prove runtime stopped -> halt;
+    no API-Key create/publish, frontend, composite readiness, dual or acceptance
+
+  candidate-discard-only:
+    API-loopback prerequisite -> re-prove the exact candidate rejection and
+    unchanged current slot -> execute only repair.discard-rejected-candidate ->
+    immutable receipt + State anchor -> repair.stop-loopback-runtime ->
+    prove runtime stopped -> halt;
+    no other bootstrap action, frontend, composite readiness, dual or acceptance
 
 online-budget recovery:
   fail-close and claim -> require API stopped/existing owned volume ->
@@ -3055,15 +3873,58 @@ online-budget recovery:
   execute only license.recover-unknown-budget ->
   one recovery-bound permit -> one API MainPID -> operational readiness ->
   dual/post-open; no bootstrap identity/API-Key write
+
+capture-cleanup finalization:
+  plan-visible gateway.fail-closed ->
+  implicit listener-absence proof + claim + zero-HTTP local preflight ->
+  plan-visible repair.finalize-api-key-capture-cleanup
+    target receipt:cmms-bootstrap ->
+  exact present-or-absent cleanup -> immutable receipt generation ->
+  State pointer CAS -> terminal application update;
+  no Compose/systemd startup, license, permit, authentication, HTTP, raw unwrap,
+  publish/revoke, readiness, dual gateway or acceptance receipt
 ```
 
-Every potentially missing prerequisite must already appear under its exact action code in the repair plan—`compose.start-state-gateway`, `runtime.install-control`, `toolchain.install`, `build.api`, `frontend.verify`, `systemd.install-units`, `license.debit-online-start` or `license.recover-unknown-budget`, `process.create-api-permit`, `process.start-api`, `process.start-frontend`, and the applicable readiness/gateway actions. A finding cannot add one during apply. Online bootstrap repair uses one ordinary debit exactly once; budget recovery uses its single `consumed_slots=10` debit and cannot coexist with another debit action.
+Every potentially missing prerequisite must already appear under its exact action code in the repair plan—`compose.start-state-gateway`, `runtime.install-control`, `toolchain.install`, `build.api`, `frontend.verify`, `systemd.install-units`, `license.debit-online-start` or `license.recover-unknown-budget`, `process.create-api-permit`, `process.start-api`, `process.start-frontend`, and the applicable readiness/gateway actions. A finding cannot add one during apply. Online bootstrap repair uses one ordinary debit exactly once; budget recovery uses its single `consumed_slots=10` debit and cannot coexist with another debit action. Cleanup finalization is the exception that permits none of those prerequisites and has exactly its fixed two-row plan-visible tuple.
 
-The discovery form is mandatory when an exact live target required by a future mutation is unavailable while API is stopped. Its successful local receipt update is evidence for planning only, never authorization: the operator must run `plan` again and confirm the new mutating plan hash. If exact receipt-bound targets already exist, the planner may omit discovery and generate the targeted bootstrap/API-Key repair directly.
+The discovery form is mandatory when an exact live target required by a future
+mutation is unavailable while API is stopped. Its successful local receipt
+update is evidence for planning only, never authorization: the planned runtime
+stop must complete, then the operator must run `plan` again and confirm the new
+mutating plan hash. If exact receipt-bound targets already exist, the planner
+may omit discovery and generate the targeted bootstrap/API-Key repair
+directly. Revoke-only and discard-only likewise stop after their one anchored
+mutation; any subsequent create/publish/completion requires a fresh
+stopped-state assessment, plan hash and confirmation.
 
-Failure-injection tests begin from each compensation end-state (all host units/Nginx stopped with PostgreSQL/MinIO either healthy or stopped), prove a current API PID and loopback gateway exist before any formal API repair write, and prove every second failure re-runs compensation while preserving evidence. They also prove repair cannot invoke an unlisted startup action, cannot spend two online debits, and cannot mix budget recovery with bootstrap mutation.
+Failure-injection tests begin from each compensation end-state (all host
+units/Nginx stopped with PostgreSQL/MinIO either healthy or stopped), prove a
+current API PID and loopback gateway exist before any formal API repair write,
+and prove every second failure re-runs compensation while preserving evidence.
+They prove discovery/revoke-only/discard-only cannot report success before the
+planned runtime stop and State clearing are durable; uncertain stop leaves
+`IN_PROGRESS`. They also prove repair cannot invoke an unlisted startup action,
+cannot spend two online debits, cannot mix budget recovery with bootstrap
+mutation, cannot mix revoke/discard with a completion suffix, and cannot attach
+startup/readiness/acceptance work to cleanup-only repair. Readiness-only tests
+prove exact receipt/State/application/Phase 2 stat replay, zero bootstrap
+mutation and zero second publication, and require a cleanup-only plan first
+whenever capture cleanup remains pending.
 
-On a proven fresh PostgreSQL volume under a confirmed bootstrap, `ApplicationInitializer` necessarily creates the source-defined superadmin company/settings, `SUPER_ADMIN` role, initial invitation, default-password superadmin user, and the `FREE`/`STARTER`/`PROFESSIONAL`/`BUSINESS` subscription plans. The plan lists this as `cmms.initialize-fresh-database`, binds the reviewed initializer/migration hashes, and accepts it only when preflight proves the new owned volume; it is not attributed to `BootstrapApplier`. Initialization may also create the configured empty `atlas-bucket`, update default roles, usage counters and temporary timezone fields; sign-in/API-Key authentication may update `lastLogin`/`lastUsed`; online license mode may update its internal tracker. Bucket creation must not create a CMMS `File` record or object.
+On a proven fresh PostgreSQL volume under a confirmed bootstrap,
+`ApplicationInitializer` necessarily creates the source-defined superadmin
+company/settings, `SUPER_ADMIN` role, initial invitation, default-password
+superadmin user, and the `FREE`/`STARTER`/`PROFESSIONAL`/`BUSINESS`
+subscription plans. The plan lists this as
+`cmms.initialize-fresh-database`, binds the reviewed initializer/migration
+hashes, and accepts it only when preflight proves the new owned volume; it is
+not attributed to `BootstrapApplier`. `process.start-api` requires that later
+authorization row before Java starts, and dispatching the row after start only
+verifies the initializer result without another write. Initialization may
+also create the configured empty `atlas-bucket`, update default roles, usage
+counters and temporary timezone fields; sign-in/API-Key authentication may
+update `lastLogin`/`lastUsed`; online license mode may update its internal
+tracker. Bucket creation must not create a CMMS `File` record or object.
 
 There is one explicit source residual: on an ordinary start/restart, if the superadmin company's users were externally deleted, current `ApplicationInitializer` can recreate the default-password superadmin before formal readiness can detect the drift. With the “no direct DB and no CMMS business-code change” boundary, the controller cannot prevent that pre-readiness write. Therefore “zero identity writes” for ordinary operations means zero identity API calls by the orchestrator, not an absolute claim about initializer behavior. Post-start reconciliation must compare receipt-bound superadmin company/user IDs and candidate/current authentication; any recreated/default credential or identity drift immediately fail-closes, stops API/frontend/Nginx, preserves evidence and requires an explicit repair/security response. It never opens dual gateway or silently rotates/deletes the recreated identity. Tests simulate this initializer drift. Assets and work orders must still remain stable across ordinary start/restart.
 
@@ -3148,11 +4009,13 @@ Expected: the commit contains orchestration and offline tests only; no live list
 - Produces: enum `ReadinessIntent` with `BOOTSTRAP_ACCEPTANCE` and `OPERATIONAL`
 - Produces: immutable `ExpectedRuntime`, `AdministrativeReadinessCredentials`, `MinioCredentials` and `ReadinessCheck`
 - Produces: secret-bearing `PresignedUrl` with redacted `repr`/`str` and transport-only unwrapping
+- Produces: `ReadinessChecker.check_api_loopback(expected: ExpectedRuntime, api: CmmsApi, runner: CommandRunner) -> ReadinessReport`, restricted to the fixed unauthenticated health call and no CMMS domain checks
 - Produces: `ReadinessChecker.check_preopen(expected: ExpectedRuntime, api: CmmsApi, runner: CommandRunner, credentials: AdministrativeReadinessCredentials, intent: ReadinessIntent) -> ReadinessReport`
 - Produces: `ReadinessChecker.check_postopen(expected: ExpectedRuntime, api: CmmsApi, runner: CommandRunner, api_key: RawApiKey, intent: ReadinessIntent) -> ReadinessReport`
 - Produces: `ReadinessChecker.check_live_acceptance(expected: ExpectedRuntime, api: CmmsApi, runner: CommandRunner, api_key: RawApiKey) -> ReadinessReport`
-- Produces: `LifecycleReadinessAdapter(ReadinessPort)` implementing `require_loopback` and `require_dual`
+- Produces: `LifecycleReadinessAdapter(ReadinessPort)` implementing `require_api_loopback`, `require_loopback` and `require_dual`
 - Produces: `MinioProbe.run(expected: ExpectedRuntime, credentials: MinioCredentials) -> MinioProbeResult`
+- Produces: typed `AcceptanceReceipt` constrained by Task 2's fixed structural schema
 - Produces: `AcceptanceReceipt.from_readiness(context: ClaimedApplyContext, preopen: ReadinessReport, postopen: ReadinessReport, minio: MinioProbeResult) -> AcceptanceReceipt`
 - Persists: `.runtime/receipts/cmms-development.json`
 - Produces for tests only: `ReadinessFixture` and `MinioProbeFixture`
@@ -3217,6 +4080,15 @@ def test_public_minio_url_is_redacted_and_preserves_signed_internal_host(
         "X-Amz-SignedHeaders",
     )
 ```
+
+`check_api_loopback()` is a separate pre-bootstrap barrier. It checks only the
+State-bound API unit/MainPID/start ticks, ownership of `127.0.0.1:8082`, the
+fixed loopback-only gateway generation, the exact unauthenticated
+`/api/health-check` projection and the mode-appropriate license guard/budget
+anchor. It receives no credentials, and tests prove the supplied `CmmsApi`
+records only that health call and zero authentication/company/user/role/
+API-Key/asset/work-order calls. It cannot produce an acceptance receipt or
+authorize dual gateway.
 
 Pre-open tests must assert readiness fails when any of these is absent or mismatched:
 
@@ -3294,11 +4166,46 @@ def combine_readiness(
 
 Call the Compose identity/health, unit/PID/socket, gateway path, formal API identity/scope, license control and source-cleanliness checks in a fixed order. Readiness succeeds only if every check is true.
 
-Implement and wire `LifecycleReadinessAdapter` in this task; remove the public CLI's Task 9 `UnavailableReadinessPort` binding. The adapter derives intent deterministically: an acceptance-profile `bootstrap` or bootstrap-completing `repair` before Phase 2 provisioning uses `BOOTSTRAP_ACCEPTANCE`; every `start`, restart and mode switch uses `OPERATIONAL`. It rejects any attempt to override intent from env or CLI.
+Implement and wire `LifecycleReadinessAdapter` in this task; remove the public
+CLI's Task 9 `UnavailableReadinessPort` binding. The adapter derives intent
+only from the immutable confirmed plan produced by Task 9. It selects
+`BOOTSTRAP_ACCEPTANCE` iff profile is `ACCEPTANCE`, operation is `BOOTSTRAP`
+or `REPAIR`, and the already registry-valid tuple contains exactly one
+`readiness.probe-minio-route`. Task 2's grammar proves a repair tuple with that
+row is either bootstrap-mutation completion or completed-publication
+readiness-only, and Task 9 planning plus apply-time preflight already proved
+seed absence, State-selected/projected state
+`FINAL_PERMISSIONS_VERIFIED` or `GATEWAY_ENABLED` and the complete composite
+pre-open/dual/post-open rows. Those assessment-only facts are not read by this
+adapter and need not be serialized as a second branch.
+Discovery, budget-recovery and capture-cleanup repair never use
+`BOOTSTRAP_ACCEPTANCE`; every `start`, restart and mode switch uses
+`OPERATIONAL`. The adapter rejects any env/CLI override and cannot add a
+missing action.
 
-`require_loopback()` calls `check_preopen()` with current administrator slots and returns a typed `LoopbackReadinessEvidence` that binds the report, plan hash, state generation and API process start ticks. Lifecycle keeps that value locally, enables dual mode and passes it into `require_dual()`, which rejects a binding mismatch and runs `check_postopen()`. For `BOOTSTRAP_ACCEPTANCE`, `require_dual()` additionally requires exact action code `readiness.probe-minio-route`, runs `MinioProbe` exactly once, and returns a `LifecycleReadinessEvidence` containing an in-memory acceptance receipt only after pre-open, post-open and cleanup all succeed. For `OPERATIONAL`, it returns no receipt and performs no MinIO or domain write. Lifecycle alone atomically persists a returned receipt. Any adapter exception propagates through the existing lifecycle compensation path, which restores loopback-only and cannot emit a receipt.
+`require_api_loopback()` exact-checks its distinct planned row, calls only
+`check_api_loopback()` and returns `ApiLoopbackEvidence`; it cannot call or
+substitute `check_preopen()`. `require_loopback()` calls `check_preopen()` with
+current administrator slots and returns a typed `LoopbackReadinessEvidence`
+that binds the report, plan hash, state generation and API process start ticks.
+Lifecycle keeps that value locally, enables dual mode and passes it into
+`require_dual()`, which rejects a binding mismatch and runs
+`check_postopen()`. For `BOOTSTRAP_ACCEPTANCE`, `require_dual()` exact-checks
+the already planned `readiness.probe-minio-route`, runs `MinioProbe` exactly
+once, and returns a `LifecycleReadinessEvidence` containing an in-memory
+acceptance receipt only after pre-open, post-open and cleanup all succeed. For
+`OPERATIONAL`, it returns no receipt and performs no MinIO or domain write.
+Lifecycle alone atomically persists a returned receipt. Any adapter exception
+propagates through the existing lifecycle compensation path, which restores
+loopback-only and cannot emit a receipt.
 
-The CLI constructs the adapter with validated descriptors and passes it into `LifecycleDependencies`. Offline tests keep using a scripted port. Add ordering tests for pre-open → dual enable → post-open → one MinIO probe → receipt, plus failure injection at each boundary and a test proving operational readiness performs zero probe writes.
+The CLI constructs the adapter with validated descriptors and passes it into
+`LifecycleDependencies`. Offline tests keep using a scripted port. Add
+ordering tests for pre-open → dual enable → post-open → one MinIO probe →
+receipt, plus failure injection at each boundary, negative tests for
+discovery/revoke-only/discard-only/budget-recovery/capture-cleanup, positive
+tests for both completion and readiness-only acceptance repair, and a test
+proving operational readiness performs zero probe writes.
 
 - [ ] **Step 5: Implement SigV4 signing and public-origin rewriting**
 
@@ -3426,40 +4333,10 @@ Register:
 
 Add required live options `--cmms-deployment-receipt` and `--cmms-phase2-env-file` to `tests/e2e/conftest.py`. The path policy accepts only `../.runtime/receipts/cmms-development.json`, the absence-check target `../.runtime/receipts/phase2-shadow-seed.json`, and `../.runtime/predictive-maintenance-shadow.env` after canonical resolution. The latter is not the CMMS runtime env: parse its strict known-key schema and unwrap only `PILOT_CMMS_CREDENTIAL` when its envelope type is exactly `cmms_api_key`. Without both options, collection marks every `cmms_deployment_e2e` item skipped before fixtures can touch Docker/HTTP/systemd.
 
-The receipt is canonical `0600` JSON and contains no credentials:
-
-```text
-schema_version = 1
-record_type = cmms-acceptance-receipt
-plan_sha256
-root_sha
-cmms_gitlink
-cmms_head
-api_artifact_sha256
-controller_entrypoint_sha256
-controller_package_sha256
-unit_generation
-api_main_pid
-api_process_start_ticks
-gateway_ipv4
-gateway_generation
-license_mode
-company_id
-organization_admin_user_id
-runtime_user_id
-role_id
-api_key_id
-asset_total = 0
-work_order_total = 0
-preopen_report_sha256
-preopen_check_codes
-postopen_report_sha256
-postopen_check_codes
-minio_probe_result_sha256
-minio_probe_check_codes
-minio_cleanup_code = CLEAN
-checked_at
-```
+The receipt is canonical `0600` JSON, contains no credentials and uses the
+exact Task 2 top-level schema. This task fixes `asset_total=0`,
+`work_order_total=0`, `minio_cleanup_code=CLEAN` and the bounded readiness-code
+vocabulary; it does not extend the wire record.
 
 The readiness hashes cover canonical secret-free reports. The bounded check tuples must include exact dual-listener generation plus the `host.docker.internal` and `cmms.localhost` container-path codes from the same post-open apply. The MinIO fields bind only canonical secret-free result codes from the single write probe run inside that apply; no field contains an object key, URL, access key, signature or payload. Development dirty runs can produce state/readiness reports but never this acceptance receipt.
 
