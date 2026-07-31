@@ -3,7 +3,7 @@
 ## 文档状态
 
 - 日期：2026-07-31
-- 状态：书面设计已批准；控制面待实施，live bootstrap 待独立确认
+- 状态：书面设计及 Task 2 确认门补充设计已批准；控制面实施中，live bootstrap 待独立确认
 - 目标环境：本机隔离开发与 Phase 2 Shadow 验收
 - CMMS 源码：总仓 `components/cmms` 当前记录的组件提交
 
@@ -255,6 +255,75 @@ Phase 2 的 `.runtime/predictive-maintenance-shadow.env` 独立管理，只保�
 
 `plan`、`status` 和 `secret` 不持有该 effect lease：`plan` 对 State/receipt/config/secret stat 做前后稳定性复核，`apply` 在每次使用 secret/env 时通过已持有描述符和 stat lineage 检测并发替换；这是 apply effect 的单写锁，不是整个 `.runtime` 的全局文件锁。安全性的 `emergency fail-closed` 是唯一服务动作例外，只能缩小网关暴露。进程崩溃会由操作系统释放锁，但 `ATTEMPTED`/`IN_PROGRESS` reservation 不会变成成功或失败；任何远端提交、receipt/State 锚定、补偿证明或终态写入不确定时保留非终态，并由新哈希 reconciliation plan 处理。
 
+### 计划应用记录与动作验证
+
+每个已消费的计划哈希对应一个固定 schema 的规范 `PlanApplicationRecord`：
+
+```text
+schema_version = 1
+record_type = cmms-plan-application
+application_id
+application_generation
+plan_sha256
+state
+attempted_at
+claimed_at
+terminal_at
+safe_result_codes
+```
+
+`application_id` 是 reservation 创建时生成的非秘密 128-bit 小写十六进制值；`plan_sha256` 必须是小写十六进制 SHA-256，并与 application 文件名一致。时间统一编码为固定六位小数的 UTC `YYYY-MM-DDTHH:MM:SS.ffffffZ`，满足 `attempted_at <= claimed_at <= terminal_at`，忽略其中为 `null` 的项。`application_id`、`plan_sha256` 和 `attempted_at` 在所有 generation 中不可变。
+
+状态、generation 和 nullable 字段的合法组合只有：
+
+| State | Generation | `claimed_at` | `terminal_at` | `safe_result_codes` 首项 |
+|---|---:|---|---|---|
+| `ATTEMPTED` | 1 | `null` | `null` | `null` |
+| `CONTENDED` | 2 | `null` | 必填 | `APPLY_CONTENDED` |
+| `REJECTED` | 2 | `null` | 必填 | `APPLY_REJECTED` |
+| `IN_PROGRESS` | 2 | 必填 | `null` | `null` |
+| `SUCCEEDED` | 3 | 必填 | 必填 | `APPLY_SUCCEEDED` |
+| `FAILED` | 3 | 必填 | 必填 | `APPLY_FAILED` |
+
+`safe_result_codes` 是有序、去重的稳定代码列表，最多 32 项；每项必须匹配 `[A-Z][A-Z0-9_.-]{0,63}`，并且是控制面定义的枚举值。不允许路径、PID、异常文本、堆栈或上游响应。每次转换都必须原子替换、fsync、重开并核对前一 generation；终态不可再次转换。`REJECTED` 只表示取得 effect lease 后、第一次 service effect 前已经确定的 snapshot、binding 或 confirmation 拒绝。只有在补偿结果和终态持久化均可证明时才能写 `FAILED`；不确定的 fail-close、远端提交、补偿或终态写入继续保留 `ATTEMPTED` 或 `IN_PROGRESS`。
+
+动作验证采用单一 action tuple、分层验证，不在计划中增加另一个 `PlanBranch` 真相源：
+
+- `ActionRegistry` 只校验已持久化字段：完整 `ActionCode` 注册、handler/mutation class、target 类型和格式、allowed operations、互斥关系、依赖及规范顺序。它接收 operation、profile、license mode、bootstrap bindings 和 actions，但不读取 State、文件、进程或 HTTP。
+- `DeploymentPlan.create` 校验 snapshot、随机 nonce、有效期、operation/profile/license 组合和 action-dependent bindings 的 presence/nullability。
+- 生命周期规划器根据一个稳定的 `PlanningAssessment` 唯一生成规范 action tuple；调用者不能直接指定分支或任意 actions。
+- apply-time preflight 在 fail-close 和 claim 后，以零 HTTP 方式重新生成同一 assessment 和 tuple，并逐项精确比较 actions、targets、profile/license 与 bootstrap bindings；它不能补充、删除或重排动作。
+
+注册表可在内部把 tuple 分类为 active/stopped start、discovery repair、bootstrap mutation repair、budget recovery repair 或 capture-cleanup repair，但分类值不导出、不序列化。所谓“唯一 action tuple”是指同一个 `PlanningAssessment` 只能生成一个 tuple，而不是每个 operation 在所有运行状态下只有一组固定动作。结构性错误由注册表和 `DeploymentPlan.create` 拒绝；active/stopped、卷状态、当前 receipt 和其他运行上下文的选择由规划器决定，并由 preflight 精确重放。
+
+验收 profile 的 repair 只有在 Phase 2 seed receipt 缺失、动作投影后的 bootstrap 状态达到 `FINAL_PERMISSIONS_VERIFIED`，并且 tuple 包含完整 pre-open、dual enable 和 post-open 验证时，才可生成验收回执。Discovery、budget recovery 和 capture-cleanup repair 永不生成验收回执；readiness adapter 只能执行计划中已有的 MinIO probe action，不能自行添加。
+
+Capture-cleanup repair 的唯一 plan-visible tuple 是：
+
+```text
+gateway.fail-closed
+repair.finalize-api-key-capture-cleanup
+    target_kind = receipt
+    target_id = receipt:cmms-bootstrap
+```
+
+Claim 和 local preflight 是生命周期屏障，不是伪造的 `ActionCode`。该 tuple 的固定执行顺序为：
+
+```text
+静态验证
+-> 创建 ATTEMPTED reservation
+-> 取得 effect lease
+-> 执行 gateway.fail-closed 并证明外部 listener 不存在
+-> ATTEMPTED 转为 IN_PROGRESS
+-> local preflight 精确重放
+-> cleanup handler
+-> 创建 immutable receipt generation
+-> CAS 更新 StateRecord current pointer
+-> application terminal transition
+```
+
+Cleanup handler 只能在 observed stat 与历史完整 stat 相等时通过 descriptor-bound unlink、目录 fsync 并证明文件消失，或在 observed 为 `null` 时证明持续不存在；published outcome 还必须精确复核 Phase 2 env stat。随后它只能写入并由 State 选中新 cleanup generation。该 tuple 禁止 Compose/systemd 启动、许可证、permit、认证、HTTP、raw-key 解包、publish/revoke、readiness 和 dual gateway 动作。
+
 ### 一次性 bootstrap
 
 1. 只读检查 Docker、Compose、项目专用 JDK 17/Maven 3.9.3/Node 21.6.1、端口和工作树；解析并核验 Docker 默认 bridge gateway。缺少工具链时只输出待执行的校验和固定 bootstrap 计划，并在授权门停止。
@@ -486,6 +555,8 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
 - 前端修改可通过 HMR 生效；API 修改可快速构建和受控重启，公共入口不变。
 - API MainPID 只能由短时单次 permit 启动；任何退出都会执行 unit 级 fail-closed，直接 systemctl 操作不能绕过 gateway 对账门。
 - 所有 `apply` 共享 apply-effect 独占锁；静态有效的 plan 先写唯一的 `ATTEMPTED` 审计 reservation，竞争 loser 只把它改为 `CONTENDED`，随后在任何 gateway/HTTP/receipt/StateRecord/service effect 前失败；未知提交或补偿保留 `ATTEMPTED`/`IN_PROGRESS` 并要求新 reconciliation plan。
+- 每个 plan application 都使用固定 schema、单调 generation 和状态相关的 nullable/result-code 组合；终态不可修改，不确定结果不得伪装为 `FAILED` 或 `REJECTED`。
+- ActionRegistry、DeploymentPlan、规划器和 apply-time preflight 按分层职责共享同一个规范 action tuple；不序列化额外 `PlanBranch`，cleanup-only repair 只能使用固定的两行动作和隐式 claim/preflight 屏障。
 - 未跟踪运行文件是唯一操作者管理的持久秘密来源；必要的 API 进程环境复制受本机可信边界约束，状态容器配置、日志和状态输出不泄露秘密值。
 - Phase 2 API Key 只能来自 capture stat、bootstrap receipt 与 StateRecord 完整锚定的同一 raw-key/ID 证据链；发布结果先锚定、capture 后删除，未锚定捕获只能精确吊销。
 - bootstrap receipt 使用 SHA-addressed immutable generations，StateRecord 是唯一 current 指针；fresh apply 的动态 capture/发布 stat 只能通过同一 claimed context 的 State-selected lineage 传给后续已计划动作，orphan generation 无权推进。
