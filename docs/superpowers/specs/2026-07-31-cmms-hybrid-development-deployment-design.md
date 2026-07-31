@@ -3,7 +3,7 @@
 ## 文档状态
 
 - 日期：2026-07-31
-- 状态：架构方向已批准，等待书面设计复核
+- 状态：书面设计已批准；控制面待实施，live bootstrap 待独立确认
 - 目标环境：本机隔离开发与 Phase 2 Shadow 验收
 - CMMS 源码：总仓 `components/cmms` 当前记录的组件提交
 
@@ -103,15 +103,17 @@ platform-integration --> host.docker.internal:3000 -+
 
 Compose 不使用 `container_name`，不声明外部卷，不连接 ThingsBoard 网络，也不接收不需要的 CMMS API 密钥或许可证。PostgreSQL 和 MinIO 的宿主机端口只绑定 `127.0.0.1`；Nginx 是唯一例外，它同时绑定 loopback 和只供本机容器访问的精确 Docker host-gateway 地址，不绑定 LAN 接口或 `0.0.0.0`。
 
-Nginx 单独使用 Linux `network_mode: host`。启动脚本从 Docker 默认 bridge 解析网关 IPv4，确认它属于本机 Docker bridge 且不是 wildcard/LAN 地址，再把无秘密模板渲染到 `.runtime/`。运行配置显式监听 `127.0.0.1:3000` 和该精确网关的 `:3000`，并通过 `127.0.0.1:3001`、`127.0.0.1:8082` 和 `127.0.0.1:9000` 访问前端、API 和 MinIO。PostgreSQL 与 MinIO 继续使用 Compose 的隔离桥接网络；只有各自明确声明的 loopback 端口可以被宿主机访问。Nginx 不加入该桥接网络，也不使用容器服务名。获准启动后的隔离容器烟测必须再证明 `host.docker.internal:host-gateway` 实际解析到同一地址；不一致时停止，不放宽监听范围。公共路由保持 CMMS 当前单域语义：
+Nginx 单独使用 Linux `network_mode: host`。启动脚本从 Docker 默认 bridge 解析网关 IPv4，确认它属于本机 Docker bridge 且不是 wildcard/LAN 地址，再把无秘密模板渲染到 `.runtime/cmms-nginx/cmms-development-nginx.conf`。当前主机的 `cmms.localhost` 同时解析为 `127.0.0.1` 和 `::1`，所以 loopback-only 配置精确监听 `127.0.0.1:3000` 与 `[::1]:3000`；dual 配置只再加入该精确 Docker gateway IPv4 的 `:3000`，不加入 IPv6 wildcard 或 LAN 地址。Nginx 通过 `127.0.0.1:3001`、`127.0.0.1:8082` 和 `127.0.0.1:9000` 访问前端、API 和 MinIO。PostgreSQL 与 MinIO 继续使用 Compose 的隔离桥接网络；只有各自明确声明的 loopback 端口可以被宿主机访问。Nginx 不加入该桥接网络，也不使用容器服务名。获准启动后的隔离容器烟测必须再证明 `host.docker.internal:host-gateway` 实际解析到同一地址；不一致时停止，不放宽监听范围。公共路由保持 CMMS 当前单域语义：
 
 - `/` 转发 React 开发服务器并保留 WebSocket Upgrade，支持 HMR；
 - `/api/` 转发 Spring Boot，并移除外部 `/api` 前缀；
 - `/storage/` 转发 MinIO，并保留大文件上传所需配置。
 
+任何携带 `x-api-key` 的 `/api` 请求还必须经过绑定当前 `platform-integration` 客户端与契约摘要的 method/path 正向白名单：只允许 `/auth/me`、工单搜索、规范 equipment ID 资产查询，以及带规范 `Idempotency-Key` 的 Phase 2 资产创建；其他 API Key 路由在到达 CMMS 前返回稳定 JSON `403` 和策略头。Bearer bootstrap 流量不走该分支。该规则不检查 JSON body，不能单独证明资产创建含 `equipment_id`；受信的已绑定 Phase 2 客户端、契约和独立 provisioning 计划仍负责请求体与实际写授权。
+
 `cmms.localhost` 是 CMMS 返回给浏览器的规范公共主机名。preflight 必须证明它在宿主机解析为 loopback；任何需要解引用 CMMS 绝对公共 URL 的隔离容器都必须通过精确 `extra_hosts` 把 `cmms.localhost` 映射到同一个 Docker host-gateway。Phase 2 的 CMMS API base URL 仍保持既有固定值 `http://host.docker.internal:3000`，不依赖容器 DNS 自动理解 `.localhost`。
 
-MinIO SDK 先针对内部 endpoint `http://127.0.0.1:9000` 生成签名，再由现有 CMMS 代码把 origin 替换为公共 endpoint。为保持 SigV4 有效，Nginx 的 `/storage/` 必须剥离前缀并把转发 `Host` 精确重写为签名时的 `127.0.0.1:9000`。运行烟测必须证明同一条签名 URL 可从宿主机下载，并在带精确 `cmms.localhost:host-gateway` 映射的隔离容器中下载。
+MinIO SDK 先针对内部 endpoint `http://127.0.0.1:9000` 生成签名，再由现有 CMMS 代码把 origin 替换为公共 endpoint。为保持 SigV4 有效，Nginx 的 `/storage/` 必须剥离前缀并把转发 `Host` 精确重写为签名时的 `127.0.0.1:9000`。由于 query 含 access-key identity 与签名，`/storage/` 同时禁用 access log 与可能回显完整 request 的 location error log；控制面只保留稳定结果码。经确认 apply 内的运行烟测必须证明同一条签名 URL 可从宿主机下载，并在带精确 `cmms.localhost:host-gateway` 映射的隔离容器中下载。
 
 Nginx 可以先于宿主机进程启动；此时 `/api` 或 `/` 返回 `502` 只表示对应开发进程未就绪，不得误报整个基础设施已通过验收。
 
@@ -189,8 +191,11 @@ systemd unit 使用这些工具的绝对路径。若 bootstrap 尚未获准、�
 ├── cmms-frontend.env
 ├── cmms-development-state.json
 ├── cmms-license-online-budget.json
-├── cmms-development-nginx.conf
+├── cmms-development-apply.lock
+├── cmms-nginx/cmms-development-nginx.conf
+├── plans/cmms-development/
 ├── receipts/
+│   └── cmms-bootstrap/{receipt_sha256}.json
 ├── secrets/
 ├── start-permits/
 ├── systemd/
@@ -224,11 +229,15 @@ systemd unit 使用这些工具的绝对路径。若 bootstrap 尚未获准、�
 
 这里的“可认证/不可认证”只接受来自当前 loopback API 的确定性认证结果；连接错误、超时、`5xx`、无法证明请求命中当前 MainPID 或其他不确定结果一律保留两槽并停止。
 
+计划固化每个身份 current/candidate 的非秘密文件 stat 起点；同一已确认 bootstrap 内的合法 promotion 通过保持 candidate FD 跨同目录 rename 来建立 lineage。rename 后 current 必须仍是同一 `dev`/`ino` 且 size/mtime/字节未变，允许 ctime 单调前进并把新 stat receipt-first 记录为后续动作的期望值；candidate 路径必须消失。任何外部文件替换或“路径存在即可信”都会停止，不能因为计划仍有效而放宽。
+
 每个 secret file 都必须是当前用户拥有、单链接、非符号链接、限长的普通文件，权限为 `0600`。PostgreSQL 使用官方 `POSTGRES_PASSWORD_FILE`，MinIO 使用官方 `MINIO_ROOT_USER_FILE`/`MINIO_ROOT_PASSWORD_FILE`，使状态容器的 Docker 配置只出现 secret 路径而不是值。CMMS API 目前只接受普通环境变量，因此受控 API launcher 仅从已验证的数据库、MinIO、JWT 和许可证 key secret file 读取并导出到 API 进程环境，不读取 bootstrap 身份密码；若提供离线许可证文件，launcher 只把其受限绝对路径作为 `LICENSE_FILE_PATH` 传给 API，不把文件内容复制进环境。这意味着同一 Unix 用户或具有 Docker/调试权限的主体属于本地可信边界。设计承诺的是“运行文件是唯一操作者管理的持久秘密来源，日志、状态和 Docker 配置不复制秘密值”，而不是不现实的“秘密只存在于文件”。
 
 `cmms-frontend.env` 只包含同源 API URL、端口和非秘密 UI 开关，也使用 `0600`，以简化统一校验。
 
 `cmms-development-state.json` 不保存秘密，只记录 Compose 项目名、期望 CMMS git SHA、实际启动 SHA、systemd MainPID/进程启动标识、解析后的 Docker host-gateway、启动时间和固定端口。状态文件不能替代 Git、运行进程和 API 验证。验收时必须把 unit MainPID、进程工作目录、启动记录、当前干净 SHA 与总仓 gitlink 重新交叉核对。
+
+bootstrap receipt 不覆盖写一个“当前文件”，而是在 `.runtime/receipts/cmms-bootstrap/` 中按规范内容 SHA-256 保存不可变 `0600` generation。`StateRecord.bootstrap_receipt_sha256` 是唯一 current 指针：先独占创建、fsync 并重开新 generation，再 CAS 更新 StateRecord，旧 generation 始终保留。崩溃发生在 CAS 前时旧指针仍可完整读取，新文件只是无授权 orphan；CAS 后则指向已完整持久化的新文件。恢复流程禁止按目录最新文件、mtime 或最大 generation 猜测 current，也不得让 orphan generation 推进 API Key 或身份状态。
 
 `cmms-license-online-budget.json` 是不含秘密、原子更新的保守预算账本，只在在线 license key 模式使用。它记录 API 进程使用的 `LocalDate`/时区、由受控 launcher 写前计入的新进程尝试数、每日上限和连续性标识；不声称等于 CMMS 内部 `KeygenRequestTracker`。离线许可证模式明确标记为不消耗该在线启动预算。
 
@@ -240,18 +249,22 @@ Phase 2 的 `.runtime/predictive-maintenance-shadow.env` 独立管理，只保�
 
 ## 启动、初始化与停止流程
 
-所有会启动、停止、重启或修复 CMMS 的命令都遵守同一个 fail-closed 不变量：第一项有状态动作必须把 Nginx 渲染或 reload 为 loopback-only，并证明 Docker host-gateway 的 `:3000` 不可达；后续任一 preflight、认证或资格检查失败都保持该状态。只有当前 API 完成全部对账后，最后一步才可开放双地址 listener。
+所有会启动、停止、重启或修复 CMMS 的命令都遵守同一个 fail-closed 不变量：除 lease 外仅用于消费 plan hash 的 application audit reservation 外，第一项 service-affecting/planned effect 必须把 Nginx 渲染或 reload 为 loopback-only，并证明 Docker host-gateway 的 `:3000` 不可达；后续任一 preflight、认证或资格检查失败都保持该状态。只有当前 API 完成全部对账后，最后一步才可开放双地址 listener。
+
+每个静态 hash/规范字节/有效期均通过的 `apply`，先在 `.runtime/plans/cmms-development/{plan_sha256}.application.json` 独占创建并 fsync 一个 `ATTEMPTED` reservation；这是 apply-effect 锁之外唯一允许的追加式审计写，也使该 plan hash 从此不可重用。随后才通过已验证父目录安全打开或首次创建 `.runtime/cmms-development-apply.lock`，取得非阻塞进程级独占锁，并把该文件描述符保持到补偿和 application 终态都完成。该锁是所有 `apply` 的 effect single writer，不按 plan hash 分片；两个不同计划也不能并发。竞争失败只把 loser 自己的 reservation 改为 `CONTENDED`，必须在 gateway、HTTP、receipt、State 和服务动作前返回 busy。等待不会让原计划重新可用，操作者只能重新生成计划。
+
+`plan`、`status` 和 `secret` 不持有该 effect lease：`plan` 对 State/receipt/config/secret stat 做前后稳定性复核，`apply` 在每次使用 secret/env 时通过已持有描述符和 stat lineage 检测并发替换；这是 apply effect 的单写锁，不是整个 `.runtime` 的全局文件锁。安全性的 `emergency fail-closed` 是唯一服务动作例外，只能缩小网关暴露。进程崩溃会由操作系统释放锁，但 `ATTEMPTED`/`IN_PROGRESS` reservation 不会变成成功或失败；任何远端提交、receipt/State 锚定、补偿证明或终态写入不确定时保留非终态，并由新哈希 reconciliation plan 处理。
 
 ### 一次性 bootstrap
 
 1. 只读检查 Docker、Compose、项目专用 JDK 17/Maven 3.9.3/Node 21.6.1、端口和工作树；解析并核验 Docker 默认 bridge gateway。缺少工具链时只输出待执行的校验和固定 bootstrap 计划，并在授权门停止。
 2. 核对总仓记录的 CMMS gitlink 与组件实际 HEAD；开发模式报告 dirty 状态，验收模式必须拒绝 dirty 或不匹配的组件。
 3. 校验三个运行环境文件、全部 secret file 和三组 credential slot 的所有者、类型、链接数、权限、大小、必需键与合法状态，不输出值；在任何远端身份创建或密码轮换前，必须已经安全持久化对应 candidate，并保留既有 current。
-4. 生成规范的 CMMS deployment/bootstrap plan。计划精确列出源码 SHA、工具链与镜像摘要、Compose 项目/卷、端口、仅 loopback 的 bootstrap Nginx 配置、隔离公司管理员标识、集成角色权限、邀请对象、API Key 标签、离线/在线许可证模式、在线模式的日期/时区与保守启动预算、预期外部请求/本地计数副作用和预期零工单结果；秘密值只以“已安全提供/缺失”表示。输出计划哈希后停止，等待后续一轮明确确认。
+4. 通过“本地/receipt-only 状态发现 → 精确目标动作规划 → 规范计划固化”的无环流程生成 CMMS deployment/bootstrap plan，public `plan` 不发出 HTTP、不登录 CMMS，因而不会在确认前触发 `lastLogin`/`lastUsed` 写入；apply 再重放同一零 HTTP 发现规则并要求动作、顺序和目标完全一致。计划精确列出一个每次生成都更新的非秘密 128-bit nonce、源码 SHA、工具链与镜像摘要、Compose 项目/卷、端口、仅 loopback 的 bootstrap Nginx 配置、隔离公司管理员标识、集成角色权限、邀请对象、API Key 标签、离线/在线许可证模式、在线模式的日期/时区与保守启动预算、预期外部请求/本地计数副作用和预期零工单结果；秘密值只以“已安全提供/缺失”表示。fresh bootstrap 只绑定规范身份、角色 external ID、API Key 标签等稳定语义目标，不伪造尚未由 CMMS 创建的 company/user/settings/role live ID。nonce 确保任何已消费/竞争失败的 plan 重新生成后得到新 hash；输出计划哈希后停止，等待后续一轮明确确认。
 5. 确认后执行 `docker compose config -q`，确认没有预构建 CMMS API/前端镜像、全局容器名、LAN/wildcard 监听或计划外对象。
-6. 首先启动 PostgreSQL、MinIO 和只监听 `127.0.0.1:3000` 的 bootstrap Nginx。Docker host-gateway 此时没有 listener。
+6. 首先启动 PostgreSQL、MinIO 和只监听 `127.0.0.1:3000`、`[::1]:3000` 的 bootstrap Nginx。Docker host-gateway 此时没有 listener。
 7. 按选定许可证模式准备 API 和前端；在线模式先原子写前计入一次保守预算，离线模式先证明 IP 过滤与 license guard 可强制执行。创建一次性 start permit 后才通过 systemd 启动 API。API 首次启动执行 Liquibase，并创建 CMMS 默认订阅计划和超级管理员；等待 loopback `/api/health-check` 和许可证状态成功。
-8. 在同一次已确认 apply 中立即通过 CMMS 正式 API 完成超级管理员密码轮换、隔离公司管理员注册、专用集成角色、精确邀请、运行用户、API Key 创建和临时权限移除。任何步骤失败都停止 API/Nginx，并保持 gateway listener 关闭。
+8. 在同一次已确认 apply 中立即通过 CMMS 正式 API 完成超级管理员密码轮换、隔离公司管理员注册、专用集成角色、精确邀请、运行用户、API Key 创建和临时权限移除。每个非幂等请求前先持久化当前计划哈希、动作及稳定目标；公司注册后的 `company_id`/`company_settings_id` 等 live ID 只有在同身份正式读回后才 receipt-first 落盘，并供后续角色动作重新核验使用。任何步骤失败都停止 API/Nginx，并保持 gateway listener 关闭。
 9. 使用新建的隔离身份验证许可证 entitlement、公司订阅 feature、邀请门、运行身份权限、API Key 能力和零工单基线。
 10. 只有第 8–9 步全部成功后，才把 Nginx 配置渲染为同时监听 loopback 与已核验 Docker host-gateway，受控 reload 后执行宿主机和隔离容器双路径烟测，并把非秘密状态写为 `GATEWAY_ENABLED`。
 
@@ -263,9 +276,9 @@ Phase 2 的 `.runtime/predictive-maintenance-shadow.env` 独立管理，只保�
 
 receipt 中的 `GATEWAY_ENABLED` 只能证明上一轮完成，不能授权本轮直接开放 gateway。日常 `start`/`restart` 必须先恢复 loopback-only 状态，再由当前正式 API 重新证明资格：
 
-1. 无论 Nginx 是否正在运行，都先把待启动配置原子渲染为只监听 `127.0.0.1:3000`；若正在运行则立即 reload。从隔离测试容器证明 Docker host-gateway 的 `:3000` 已不可达后，才继续。若无法证明 listener 已关闭，则停止。
+1. 无论 Nginx 是否正在运行，都先把待启动配置原子渲染为只监听 `127.0.0.1:3000` 与 `[::1]:3000`；若正在运行则立即 reload。从隔离测试容器证明 Docker host-gateway 的 `:3000` 已不可达后，才继续。若无法证明 listener 已关闭，则停止。
 2. 重做端口、工具链、镜像摘要、环境文件、secret file、CMMS SHA、许可证模式/预算和 Docker host-gateway preflight；receipt 缺失、未记录 `GATEWAY_ENABLED` 或在线预算不是已知可用时，保持 gateway 关闭并生成 repair plan。
-3. 启动或重启 PostgreSQL、MinIO、loopback-only Nginx 和前端；在线模式在创建 API 新 MainPID 前原子写前计入一次预算，离线模式先验证强制网络 profile 与 guard。随后创建并由 `ExecStartPre` 消费一次性 start permit，再启动 API。此时 receipt 无论记录什么都不得开放 gateway。
+3. 启动或重启 PostgreSQL、MinIO、loopback-only Nginx 和前端。若现有 API MainPID、进程启动标识、源码/产物/controller/unit/许可证与历史预算绑定全部精确匹配，则幂等 `start` 保留同一 MainPID，不创建 permit、不调用 API systemd start 且不消耗在线预算；任一绑定不确定就停止。只有 API 已停止或显式 `restart-api` 才走新进程分支：在线模式在创建新 MainPID 前原子写前计入一次预算，离线模式先验证强制网络 profile 与 guard，随后创建并由 `ExecStartPre` 消费一次性 permit。此时 receipt 无论记录什么都不得开放 gateway。
 4. 只通过 loopback 对当前 API/数据库做不改变计划身份配置的认证与读取对账：验证计划中的已轮换超级管理员、隔离公司管理员和运行用户凭据可认证，源码公开的默认超级管理员凭据已失效，并核验许可证、公司、邀请门、运行用户、角色最终权限和 API Key 元数据。只有尚未执行 Phase 2 provisioning 的 bootstrap readiness 才要求零工单；日常启动不得把合法的后续工单误判为部署故障。
 5. 只有第 4 步全部通过，才渲染双地址配置并 reload Nginx；随后核验宿主机与隔离容器公共路径命中同一实例。
 
@@ -276,7 +289,9 @@ receipt 中的 `GATEWAY_ENABLED` 只能证明上一轮完成，不能授权本�
 - 许可证验证访问已配置的 Keygen 服务，并更新本地 `KeygenRequestTracker` 计数；
 - signin 更新 `lastLogin`，API Key 认证按实现节流更新 `lastUsed`。
 
-这些是 CMMS 自己拥有的初始化、维护和审计写入，不授权编排脚本直连数据库。日常编排本身禁止 signup、邀请、角色创建/修改、密码轮换、API Key 创建/吊销或领域对象写入。gateway 开放前必须通过正式 API 证明计划中的公司、定制集成角色、用户和 API Key 仍保持精确身份与权限；在受控重启测试中还要证明资产和工单集合未被启动流程改变。实现必须维护一份跟踪的“启动副作用敏感文件”清单，至少覆盖 migration、`ApplicationInitializer`、许可证与认证过滤器及其直接写入依赖；这些文件有未审查变化时，API 最多以 loopback-only 运行供诊断，gateway 保持关闭。其他业务代码的 dirty 修改仍可在开发模式热迭代，但继续标记 `UNCOMMITTED`，不能生成验收回执。receipt 缺失、状态不一致或认证/读取对账失败时，不得把日常启动隐式升级为 bootstrap；流程停止并生成修复计划。
+这些是 CMMS 自己拥有的初始化、维护和审计写入，不授权编排脚本直连数据库。日常编排本身禁止 signup、邀请、角色创建/修改、密码轮换、API Key 创建/吊销或领域对象写入。当前 `ApplicationInitializer` 在超级管理员公司用户为空时可能在普通启动中重建默认密码用户；在不直连数据库且不修改 CMMS 业务代码的边界下，控制面无法在 Java 启动前阻止这一内部写入。它必须作为源码残余风险处理：启动后若 receipt 绑定的用户 ID/凭据失配或默认凭据重新有效，立即关闭 gateway 并停止宿主机服务，保留证据并要求独立安全修复，绝不开放双地址 listener 或把它算作成功日常启动。
+
+gateway 开放前必须通过正式 API 证明计划中的公司、定制集成角色、用户和 API Key 仍保持精确身份与权限；在受控重启测试中还要证明资产和工单集合未被启动流程改变。实现必须维护一份跟踪的“启动副作用敏感文件”清单，至少覆盖 migration、`ApplicationInitializer`、许可证与认证过滤器及其直接写入依赖；这些文件有未审查变化时，API 最多以 loopback-only 运行供诊断，gateway 保持关闭。其他业务代码的 dirty 修改仍可在开发模式热迭代，但继续标记 `UNCOMMITTED`，不能生成验收回执。receipt 缺失、状态不一致或认证/读取对账失败时，不得把日常启动隐式升级为 bootstrap；流程停止并生成修复计划。
 
 ### 部分失败修复
 
@@ -287,7 +302,7 @@ receipt 中的 `GATEWAY_ENABLED` 只能证明上一轮完成，不能授权本�
 | 首次超级管理员密码 | 依次核对 candidate、current（如有）与源码默认凭据；candidate 成功且默认失败才提升 | 仅在 candidate 已持久化、candidate 失败且默认凭据有效时调用正式密码更新端点一次；响应不确定时保留两槽并重新认证 |
 | 任一既有身份密码轮换 | 确认 current 可认证、candidate 已持久化且二者不同 | 调用正式密码更新端点一次；随后按 current/candidate 双槽协议认证并提升、丢弃或停止 |
 | 隔离公司 | 先用 current 或 candidate 登录并读取 company | 确认身份不存在时使用 candidate signup 一次；响应不确定时重新登录，candidate 成功后才提升 |
-| 集成角色 | 按公司与精确角色名读取并比较权限 | 仅在不存在时创建；同名但权限不匹配时停止并另做变更计划 |
+| 集成角色 | 按公司与精确 `externalId=ifactory-pdm-runtime` 读取，并把 name、类型与完整权限作为必须匹配的属性 | 仅在该 externalId 不存在时创建；externalId 重复、name/类型/权限冲突或只有同名不同 externalId 时停止并另做变更计划 |
 | 用户邀请 | 读取最近待处理邀请并匹配精确 email 与 role ID | 仅在不存在时调用正式 invite API 一次；冲突邀请时停止 |
 | 运行用户 | 先用 current 或 candidate 登录并核对 company/role | 确认不存在时使用匹配邀请和 candidate signup 一次；响应不确定时重新登录，candidate 成功后才提升 |
 | API Key | 按计划标签读取元数据并核对 owner/company | 仅在不存在时创建一次；原始 key 未捕获时按下述响应丢失规则停止 |
@@ -295,6 +310,10 @@ receipt 中的 `GATEWAY_ENABLED` 只能证明上一轮完成，不能授权本�
 | 网关开放 | 验证全部资格、未邀请注册负测、双路径前置条件 | 仅在全部通过时渲染并 reload 双地址 listener |
 
 修复流程不得把“请求超时”解释为“写入失败”，也不得自动重试任何非幂等写操作。
+
+若补偿已经停止 API，且 receipt 中还没有后续删除/吊销所需的精确 live target ID，修复计划不得按标签猜测目标。此时只能先生成并独立确认一个 discovery-only repair：恢复既有 API 到 loopback-only、使用显式 current/candidate slot 做正式只读对账、把安全 live ID 与证据绑定到该计划回执，然后在任何 CMMS 写入和双地址 gateway 之前停止。操作者必须再次生成并确认含精确目标的新 repair plan，才能执行删除、吊销或重建。
+
+未受邀 signup probe 的响应丢失也遵循两阶段修复。原 apply 保留旧 slot 且不重发；discovery-only repair 必须把 receipt 指定的旧 descriptor/password 精确绑定进计划，只做认证与 email 查询。再次证明零用户时只把旧 attempt 终结为“未知但未创建”、清理该 owned slot，不能据此宣称邀请门已验证；下一份新哈希计划才可绑定不同 email/slot 再做一次负测。发现用户或结果不确定时继续保留旧 slot，转入独立清理设计。
 
 ### 停止
 
@@ -335,11 +354,11 @@ deployment/bootstrap apply 使用以下闭环，不假设“既有受限身份�
 4. 由隔离公司管理员通过正式角色 API 创建专用集成角色。创建 API Key 期间可临时包含 `SETTINGS`，最终只保留 `auth/me`、资产查询/创建和工单只读搜索所需权限；
 5. 由隔离公司管理员调用正式 invite API，为计划中的运行用户 email 和精确 role ID 创建邀请记录。`ENABLE_EMAIL_NOTIFICATIONS=false` 只跳过邮件发送，不绕过邀请记录；
 6. 在创建运行用户前，使用一个未被邀请的测试 email 和同一 role ID 调用 signup，必须得到 HTTP `406` 的“未受邀”响应，且查询确认没有创建该用户；随后只允许计划中的 email 使用匹配邀请和预先持久化的 candidate 完成 signup，candidate 可认证后才提升为 current，并核对其 company 和 role；
-7. 使用运行身份创建一次性 API Key；取得 key 后立即由管理员通过正式角色 API 移除临时 `SETTINGS`，并验证该 key 无法访问设置管理接口；
-8. 把一次性 API Key 通过单文件描述符、限长和原子替换写入权限 `0600` 的 Phase 2 凭据 envelope；目标存在时必须拒绝符号链接、重复键和计划外字段，并保留其他已验证配置，不在 stdout、journal 或状态文件中出现；
-9. API Key 创建响应丢失时，先按标签读取元数据。若已存在但原始 key 未安全落盘，停止并要求新的修复计划精确删除/吊销该 key 后再创建；不得自动重试生成第二把 key。
+7. 使用运行身份创建一次性 API Key；POST 前先为该计划/动作 attempt 独占创建私有 capture reservation，成功响应后把 raw key 与返回的 Java Long ID、标签、运行用户和公司 ID 原子写入 `0600` secret envelope。重新打开后取得完整文件 stat，把同一 attempt/ID/stat 写入新的不可变 bootstrap receipt generation，再让 StateRecord CAS 选择该 SHA；只有三者全部交叉重开成功，才形成 raw key 到该 ID 的持久证据。fresh plan 的 capture 起点为 null，同一次 claimed apply 只能由这个 State-selected generation 推进私有 `ApiKeyFileLineage`，向后续权限验证/发布动作提供不可伪造的 anchored-capture 能力；不能把未知 stat 回填进 immutable plan。后续公司范围 API 搜索只能确认 ID/标签/owner/company，因为 CMMS mapper 会把 `code` 掩码，不能重建或独立证明原始 key；
+8. 只有 plan-bound continuation capture，或同一 apply 中由 State-selected generation 推进的 capture lineage，才能通过单文件描述符、限长和原子替换写入权限 `0600` 的 Phase 2 凭据 envelope；目标存在时必须拒绝符号链接、重复键和计划外字段，并保留其他已验证配置，不在 stdout、journal 或状态文件中出现。发布读回后，先创建包含 Phase 2 新 stat 的不可变 receipt generation 并由 StateRecord 选择，才可删除精确 lineage-owned capture；删除结果再由第二个不可变 generation/State 指针锚定；
+9. API Key 创建响应丢失，或 capture 写成后 receipt/State 锚定尚未完整即崩溃时，现有 capture 一律视为不可发布，不能通过事后 API 搜索或 orphan receipt 升级为可信；独立确认的 discovery repair 只记录公司范围读回的精确 ID，下一份计划只能吊销该 ID，再另行确认重建。只有 capture generation 已被 StateRecord 选择、但原 application 终态不确定时，新哈希 reconciliation plan 才可重新核验原 stat/metadata/owner 并继续。Phase 2 发布或吊销结果必须先锚定再清理 capture；若清理 pending，纯本地 repair 同时支持“历史 exact stat 仍存在”和“精确缺失”两态，前者按描述符 unlink/fsync/prove absent，后者证明 continued absence，再写 cleanup generation，全程不认证、不调用 HTTP、不解包 raw。不得按标签发布或自动重试生成第二把 key。
 
-bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_ROTATED → COMPANY_CREATED → ROLE_CREATED → INVITATION_CREATED → RUNTIME_IDENTITY_CREATED → API_KEY_CAPTURED → FINAL_PERMISSIONS_VERIFIED → GATEWAY_ENABLED`。重入时先通过正式 API 与本地 receipt 对账，再生成只包含缺失动作的新 repair plan；不得假定前一轮全部失败或重新执行已经成功的写操作。receipt 只记录公司/用户/角色/邀请/API Key 元数据 ID、计划哈希和时间，不保存密码、token 或原始 API Key。
+bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_ROTATED → COMPANY_CREATED → ROLE_CREATED → INVITATION_CREATED → RUNTIME_IDENTITY_CREATED → API_KEY_CAPTURED → FINAL_PERMISSIONS_VERIFIED → GATEWAY_ENABLED`。重入时先通过正式 API 与 StateRecord 指向的本地 receipt generation 对账，再生成只包含缺失动作的新 repair plan；不得假定前一轮全部失败、扫描 orphan generation 或重新执行已经成功的写操作。receipt 只记录公司/用户/角色/邀请/API Key 元数据 ID、计划哈希、捕获/Phase 2 文件的非秘密 stat、发布/清理状态和时间，不保存密码、token、原始 API Key 或其内容摘要。
 
 完成后必须分别证明：
 
@@ -382,7 +401,7 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
    - 固定项目名、状态服务的 loopback 端口与网关端口；
    - 没有 `container_name`、外部数据卷或 ThingsBoard 网络；
    - 不引用预构建 CMMS API/前端镜像；
-   - 只有 Nginx 使用 host network，并且渲染配置只监听 `127.0.0.1:3000` 和核验后的 Docker host-gateway；
+   - 只有 Nginx 使用 host network，并且渲染配置只监听两个精确 loopback `127.0.0.1:3000`、`[::1]:3000` 和核验后的 Docker host-gateway；
    - PostgreSQL 与 MinIO 保持桥接网络并只发布 loopback 端口。
 2. 配置与脚本测试
    - 缺文件、符号链接、错误所有者、错误权限、空秘密和端口冲突全部 fail closed；
@@ -400,6 +419,8 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
    - 停止命令不包含 `down -v` 或卷删除；
    - 日常 `start`/`restart` 不包含 signup、邀请、密码、角色或 API Key 写操作，状态不一致时只能生成 repair plan；
    - 冷启动和重启必须先证明 Docker gateway listener 已关闭，再启动当前 API 并通过 loopback 对账；模拟旧 receipt 配合替换/空数据库时 gateway 始终保持关闭；
+   - 已健康且全绑定匹配的幂等 `start` 保留同一 MainPID、零 permit/零在线 debit；stopped start 或 restart 才创建一个 permit 与一个新 MainPID；
+   - 模拟初始化器重建默认超级管理员时，gateway 不开放、宿主机服务停止且不会自动执行身份修复；
    - 启动副作用白名单和敏感文件 manifest 绑定已审查 CMMS 基线；相关源码或 migration 变化时拒绝开放 gateway；
    - 验收模式拒绝 dirty 或 gitlink 不匹配；
    - 工具链下载必须使用固定 URL 和 SHA-256，禁止 ambient 版本回退。
@@ -407,6 +428,8 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
    - `/`、`/api/`、`/storage/` 指向精确 upstream；
    - HMR/WebSocket Upgrade 和上传边界保留；
    - `/storage/` 剥离前缀并把 upstream Host 固定为 `127.0.0.1:9000`。
+   - API Key 只通过绑定契约的 method/path/idempotency-header 正向白名单；其他路由返回固定 JSON `403` 且不命中上游；
+   - `/storage/` 的成功、上游拒绝与超时日志都不包含 SigV4 query、credential 或 signature。
 4. 宿主机构建验证
    - CMMS API 目标测试与 Maven 编译通过；
    - 前端必须使用 `npm ci --legacy-peer-deps` 完成锁定安装，并通过构建；测试拒绝会改写锁文件的 `npm install`。
@@ -446,6 +469,7 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
 - [Eclipse Temurin JDK 17.0.19+10 官方发布](https://github.com/adoptium/temurin17-binaries/releases/tag/jdk-17.0.19%2B10)
 - [CMMS MinIO 签名 URL 实现](../../../components/cmms/api/src/main/java/com/grash/service/MinioService.java)
 - [CMMS API Key 权限检查](../../../components/cmms/api/src/main/java/com/grash/service/ApiKeyService.java)
+- [CMMS API Key 返回值掩码](../../../components/cmms/api/src/main/java/com/grash/mapper/ApiKeyMapper.java)
 - [CMMS API Key 认证与 `lastUsed` 审计更新](../../../components/cmms/api/src/main/java/com/grash/security/ApiKeyAuthFilter.java)
 - [CMMS 当前密码验证与密码轮换端点](../../../components/cmms/api/src/main/java/com/grash/controller/AuthController.java)
 - [CMMS 邀请注册检查与邀请记录创建](../../../components/cmms/api/src/main/java/com/grash/service/UserService.java)
@@ -461,7 +485,10 @@ bootstrap 使用显式状态机记录非秘密进度：`UNINITIALIZED → ADMIN_
 - API 和前端从当前 CMMS 组件源码运行，不使用预构建 CMMS 应用镜像。
 - 前端修改可通过 HMR 生效；API 修改可快速构建和受控重启，公共入口不变。
 - API MainPID 只能由短时单次 permit 启动；任何退出都会执行 unit 级 fail-closed，直接 systemctl 操作不能绕过 gateway 对账门。
+- 所有 `apply` 共享 apply-effect 独占锁；静态有效的 plan 先写唯一的 `ATTEMPTED` 审计 reservation，竞争 loser 只把它改为 `CONTENDED`，随后在任何 gateway/HTTP/receipt/StateRecord/service effect 前失败；未知提交或补偿保留 `ATTEMPTED`/`IN_PROGRESS` 并要求新 reconciliation plan。
 - 未跟踪运行文件是唯一操作者管理的持久秘密来源；必要的 API 进程环境复制受本机可信边界约束，状态容器配置、日志和状态输出不泄露秘密值。
+- Phase 2 API Key 只能来自 capture stat、bootstrap receipt 与 StateRecord 完整锚定的同一 raw-key/ID 证据链；发布结果先锚定、capture 后删除，未锚定捕获只能精确吊销。
+- bootstrap receipt 使用 SHA-addressed immutable generations，StateRecord 是唯一 current 指针；fresh apply 的动态 capture/发布 stat 只能通过同一 claimed context 的 State-selected lineage 传给后续已计划动作，orphan generation 无权推进。
 - 许可证模式明确可审计：离线模式引用受限许可证文件、强制只允许 loopback 出站并运行双向绑定的 guard；在线模式不存在残留 guard/IP profile，显示保守日预算和运行期重校验限制，并在启动预算未知/耗尽或启动校验失败时保持 gateway 关闭。
 - 验收模式能证明 CMMS SHA、有效的 `API_ACCESS`/`CUSTOM_ROLES` entitlements、公司计划的 `API_ACCESS`/`ROLE` features、强制邀请门、公司身份、最小权限 API Key 和零工单基线。
 - 停止、重启和失败恢复不会删除 CMMS 数据卷，也不会影响 ThingsBoard、PDM 或其他容器。
