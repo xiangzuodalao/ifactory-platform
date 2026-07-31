@@ -52,6 +52,15 @@ jobs:
           uv run --directory tests --frozen
           pytest contract/phase1 -v
 
+      - name: Validate Phase 2 offline shadow contracts
+        run: >
+          uv run --directory tests --frozen
+          pytest e2e/test_fixture_scripts.py
+          e2e/test_shadow_deployment_contract.py
+          e2e/test_shadow_seed.py
+          e2e/test_shadow_prediction.py
+          -m "not pilot_e2e" --strict-markers -v
+
       - name: Smoke-test the MCP STDIO entry point
         run: ./scripts/run-digital-mcp.sh </dev/null
 

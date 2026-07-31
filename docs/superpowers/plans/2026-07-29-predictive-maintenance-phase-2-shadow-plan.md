@@ -734,7 +734,7 @@ Tests assert:
 - Phase 2 never invokes an Alarm mutation (create/update/ACK/clear); the only
   Alarm calls are the exact tenant-scoped baseline/final-zero v2 GETs, and tests
   fail on any other method or path.
-- `migrate` exits non-zero on migration failure; `scheduler --once --now <RFC3339>` creates the complete slot batch; `prediction-worker --once` drains every eligible run present for that batch (20 in the pilot) up to a hard cap of 1,000 claims, exits non-zero if eligible rows remain at the cap, and otherwise exits only when no row is claimable; long-running roles handle `SIGTERM` without abandoning an owned lease.
+- `migrate` exits non-zero on migration failure; `scheduler --once --now <RFC3339>` creates the complete slot batch; `prediction-worker --once --now <same RFC3339>` drains every eligible run present for that batch (20 in the pilot) up to a hard cap of 1,000 claims, exits non-zero if eligible rows remain at the cap, and otherwise exits only when no row is claimable; the worker's `--now` is accepted only together with `--once` and `PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE=1`; long-running roles handle `SIGTERM` without abandoning an owned lease.
 - `--now` is rejected unless `PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE=1`; production scheduling always uses the injected system clock.
 - `shadow-summary --tenant-alias ifactory-pilot --scheduled-at <RFC3339> --format json`
   is read-only and emits bounded canonical JSON containing the tenant/slot,
@@ -778,12 +778,13 @@ Add exact CLI roles:
 platform-integration migrate
 platform-integration discover-identities --format env
 platform-integration scheduler [--once] [--now RFC3339]
-platform-integration prediction-worker [--once]
+platform-integration prediction-worker [--once] [--now RFC3339]
 platform-integration shadow-summary --tenant-alias ALIAS \
   --scheduled-at RFC3339 --format json
 ```
 
 `migrate` runs `alembic upgrade head`. `discover-identities` is read-only, permits the two expected identity settings to be absent, authenticates to ThingsBoard and CMMS, and prints only their non-secret canonical IDs as env assignments. Without `--once`, scheduler and worker use bounded polling loops and clean `SIGTERM` shutdown. Scheduler `--once` completes one slot; worker `--once` repeatedly claims and completes all eligible rows until none remain, subject to the fixed 1,000-claim safety cap described above. `shadow-summary` queries only the integration service's own tenant-scoped tables, sorts every list, enforces a 100-row output bound, and fails if alias/UUID or requested slot is not exact. All roles use the same `PLATFORM_INTEGRATION_*` Settings schema.
+For `prediction-worker`, `--now` is valid only together with `--once` and only when `PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE=1`; the continuous worker rejects it and uses the injected system clock.
 
 Update the runtime image so `alembic.ini`, the complete `migrations/` tree, package source, and locked runtime dependencies are present and readable by its non-root user. `test_image_contract.py` builds the image, starts temporary PostgreSQL, and proves the image command `platform-integration migrate` reaches Alembic `head`; an image that copies only `src/` must fail the test.
 
@@ -1237,8 +1238,9 @@ uv run --directory tests --frozen python -m e2e.support.shadow_seed apply \
 
 Only after exact readback and a mode-`0600` receipt,
 `test_shadow_prediction.py` invokes Compose to run ephemeral `scheduler
---once --now 2026-07-29T01:15:00Z` and `prediction-worker --once`, waits for
-both zero exits, then runs:
+--once --now 2026-07-29T01:15:00Z` and `prediction-worker --once --now
+2026-07-29T01:15:00Z` against that same accelerated clock, without enabling
+the `continuous` profile, waits for both zero exits, then runs:
 
 ```text
 platform-integration shadow-summary --tenant-alias ifactory-pilot
