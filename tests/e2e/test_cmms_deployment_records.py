@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from e2e.support import SafeRuntimeFixture
+import ifactory_cmms_deploy.records as records_module
 from ifactory_cmms_deploy.config import BootstrapConfig, RuntimeConfig
 from ifactory_cmms_deploy.errors import DeploymentError
 from ifactory_cmms_deploy.records import (
@@ -491,6 +492,7 @@ def _fresh_bootstrap_bindings(
     credentials = tuple(
         replace(
             row,
+            current_file=None,
             candidate_file=safe_runtime.stat_binding(
                 f"credential:{row.identity.value}:candidate",
                 500 + index,
@@ -544,6 +546,236 @@ def _cleanup_bindings(
         phase2_env_logical_id=PHASE2_TARGET,
         phase2_env_file=phase2 if outcome is ApiKeyCleanupOutcome.PUBLISHED else None,
     )
+
+
+def test_secure_file_stat_binding_rejects_non_string_logical_file_fail_closed() -> None:
+    with pytest.raises(DeploymentError) as caught:
+        SecureFileStatBinding(
+            logical_file=object(),  # type: ignore[arg-type]
+            dev=1,
+            ino=1,
+            size=0,
+            mtime_ns=0,
+            ctime_ns=0,
+        )
+    assert caught.value.code == "CMMS-E011"
+
+
+def test_invitation_uuid_accepts_any_canonical_lowercase_version() -> None:
+    stat_binding = SafeRuntimeFixture.stat_binding("probe:descriptor", 91)
+    invitation = InvitationProbePlanBinding(
+        slot_id="11111111-1111-1111-8111-111111111111",
+        canonical_email="probe@example.test",
+        descriptor_file=stat_binding,
+        password_file=replace(stat_binding, logical_file="probe:password", ino=92),
+    )
+    assert invitation.slot_id == "11111111-1111-1111-8111-111111111111"
+
+    for value in (
+        "AAAAAAAA-AAAA-5AAA-8AAA-AAAAAAAAAAAA",
+        "{aaaaaaaa-aaaa-5aaa-8aaa-aaaaaaaaaaaa}",
+        "not-a-uuid",
+    ):
+        with pytest.raises(DeploymentError):
+            replace(invitation, slot_id=value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("invitation_probe", "api_key_capture", "api_key_cleanup", "phase2_env_file"),
+)
+def test_nested_binding_constructor_rejects_wrong_optional_type(field: str) -> None:
+    credentials = (
+        CredentialPlanBinding(
+            CredentialIdentity.SUPER_ADMIN,
+            "superadmin@test.com",
+            None,
+            None,
+        ),
+        CredentialPlanBinding(
+            CredentialIdentity.ORGANIZATION_ADMIN,
+            "orgadmin@example.test",
+            None,
+            None,
+        ),
+        CredentialPlanBinding(
+            CredentialIdentity.RUNTIME_USER,
+            "runtime@example.test",
+            None,
+            None,
+        ),
+    )
+    kwargs: dict[str, object] = {
+        "credentials": credentials,
+        "invitation_probe": None,
+        "api_key_capture": None,
+        "api_key_cleanup": None,
+        "role_external_id": ROLE_TARGET,
+        "api_key_label": ROLE_TARGET,
+        "phase2_env_logical_id": PHASE2_TARGET,
+        "phase2_env_file": None,
+    }
+    kwargs[field] = object()
+    with pytest.raises(DeploymentError) as caught:
+        BootstrapPlanBindings(**kwargs)  # type: ignore[arg-type]
+    assert caught.value.code == "CMMS-E011"
+
+
+def test_nested_binding_constructor_checks_rows_before_attribute_access() -> None:
+    valid = {
+        "invitation_probe": None,
+        "api_key_capture": None,
+        "api_key_cleanup": None,
+        "role_external_id": ROLE_TARGET,
+        "api_key_label": ROLE_TARGET,
+        "phase2_env_logical_id": PHASE2_TARGET,
+        "phase2_env_file": None,
+    }
+    for credentials in (
+        [object(), object(), object()],
+        (object(), object(), object()),
+    ):
+        with pytest.raises(DeploymentError) as caught:
+            BootstrapPlanBindings(
+                credentials=credentials,  # type: ignore[arg-type]
+                **valid,
+            )
+        assert caught.value.code == "CMMS-E011"
+
+
+def test_nested_binding_constructor_enforces_fixed_semantic_literals(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    valid = safe_runtime.bootstrap_plan_bindings
+    for field, value in (
+        ("role_external_id", "other-role"),
+        ("api_key_label", "other-key"),
+        ("phase2_env_logical_id", "other.env"),
+    ):
+        with pytest.raises(DeploymentError):
+            replace(valid, **{field: value})
+        mapping = valid.to_mapping()
+        mapping[field] = value
+        with pytest.raises(DeploymentError):
+            BootstrapPlanBindings.from_mapping(mapping)
+
+
+def test_cleanup_binding_constructor_enforces_terminal_cross_products() -> None:
+    historical = SafeRuntimeFixture.stat_binding("api-key:capture", 93)
+    phase2 = _phase2_stat(94)
+    invalid = (
+        {
+            "terminal_outcome": ApiKeyCleanupOutcome.PUBLISHED,
+            "observed_captured_file": None,
+            "phase2_env_file": None,
+        },
+        {
+            "terminal_outcome": ApiKeyCleanupOutcome.REVOKED,
+            "observed_captured_file": None,
+            "phase2_env_file": phase2,
+        },
+        {
+            "terminal_outcome": ApiKeyCleanupOutcome.PUBLISHED,
+            "observed_captured_file": replace(historical, ino=999),
+            "phase2_env_file": phase2,
+        },
+    )
+    for values in invalid:
+        with pytest.raises(DeploymentError) as caught:
+            ApiKeyCleanupPlanBinding(
+                attempt_id="e" * 32,
+                api_key_id=42,
+                historical_captured_file=historical,
+                **values,
+            )
+        assert caught.value.code == "CMMS-E011"
+
+    published = ApiKeyCleanupPlanBinding(
+        attempt_id="e" * 32,
+        api_key_id=42,
+        terminal_outcome=ApiKeyCleanupOutcome.PUBLISHED,
+        historical_captured_file=historical,
+        observed_captured_file=None,
+        phase2_env_file=phase2,
+    ).to_mapping()
+    revoked = dict(published)
+    revoked["terminal_outcome"] = "REVOKED"
+    revoked["phase2_env_file"] = None
+    invalid_mappings = (
+        {**published, "phase2_env_file": None},
+        {
+            **published,
+            "observed_captured_file": replace(historical, ino=999).to_mapping(),
+        },
+        {**revoked, "phase2_env_file": phase2.to_mapping()},
+    )
+    for mapping in invalid_mappings:
+        with pytest.raises(DeploymentError):
+            ApiKeyCleanupPlanBinding.from_mapping(mapping)
+
+
+def test_bootstrap_binding_constructor_enforces_cleanup_only_cross_products(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    published = _cleanup_bindings(safe_runtime, ApiKeyCleanupOutcome.PUBLISHED)
+    credentials = safe_runtime.bootstrap_plan_bindings.credentials
+    invalid = (
+        {"credentials": credentials},
+        {
+            "invitation_probe": _fresh_bootstrap_bindings(
+                safe_runtime
+            ).invitation_probe
+        },
+        {"api_key_capture": _capture_binding(safe_runtime)},
+        {"phase2_env_file": _phase2_stat(95)},
+    )
+    for values in invalid:
+        with pytest.raises(DeploymentError):
+            replace(published, **values)
+
+    serialized = published.to_mapping()
+    serialized_invalid = (
+        {
+            **serialized,
+            "credentials": [
+                row.to_mapping()
+                for row in safe_runtime.bootstrap_plan_bindings.credentials or ()
+            ],
+        },
+        {
+            **serialized,
+            "invitation_probe": _fresh_bootstrap_bindings(
+                safe_runtime
+            ).invitation_probe.to_mapping(),  # type: ignore[union-attr]
+        },
+        {
+            **serialized,
+            "api_key_capture": _capture_binding(safe_runtime).to_mapping(),
+        },
+        {
+            **serialized,
+            "phase2_env_file": _phase2_stat(95).to_mapping(),
+        },
+        {
+            **safe_runtime.bootstrap_plan_bindings.to_mapping(),
+            "credentials": None,
+        },
+    )
+    for mapping in serialized_invalid:
+        with pytest.raises(DeploymentError):
+            BootstrapPlanBindings.from_mapping(mapping)
+
+    with pytest.raises(DeploymentError):
+        BootstrapPlanBindings(
+            credentials=None,
+            invitation_probe=None,
+            api_key_capture=None,
+            api_key_cleanup=None,
+            role_external_id=ROLE_TARGET,
+            api_key_label=ROLE_TARGET,
+            phase2_env_logical_id=PHASE2_TARGET,
+            phase2_env_file=None,
+        )
 
 
 def _p_actions() -> tuple[PlannedAction, ...]:
@@ -1089,11 +1321,11 @@ def test_registry_rejects_profile_license_and_binding_mismatch(
         )
 
     bootstrap = _legal_branch("bootstrap", LicenseMode.OFFLINE)
-    wrong = replace(
-        _fresh_bootstrap_bindings(safe_runtime),
-        role_external_id="different",
-    )
     with pytest.raises(DeploymentError):
+        wrong = replace(
+            _fresh_bootstrap_bindings(safe_runtime),
+            role_external_id="different",
+        )
         ActionRegistry.validate(
             Operation.BOOTSTRAP,
             RuntimeProfile.DEVELOPMENT,
@@ -1158,18 +1390,12 @@ def test_cleanup_only_requires_credentials_null_and_exact_stat_projection(
     )
 
     invalid = (
-        replace(bindings, credentials=safe_runtime.bootstrap_plan_bindings.credentials),
-        replace(bindings, phase2_env_file=_phase2_stat(901)),
-        replace(
-            bindings,
-            api_key_cleanup=replace(
-                bindings.api_key_cleanup,
-                phase2_env_file=None,
-            ),
-        ),
+        {"credentials": safe_runtime.bootstrap_plan_bindings.credentials},
+        {"phase2_env_file": _phase2_stat(901)},
     )
-    for changed in invalid:
+    for values in invalid:
         with pytest.raises(DeploymentError):
+            changed = replace(bindings, **values)
             ActionRegistry.validate(
                 Operation.REPAIR,
                 RuntimeProfile.DEVELOPMENT,
@@ -1177,6 +1403,11 @@ def test_cleanup_only_requires_credentials_null_and_exact_stat_projection(
                 changed,
                 actions,
             )
+    with pytest.raises(DeploymentError):
+        replace(
+            bindings.api_key_cleanup,
+            phase2_env_file=None,
+        )
 
 
 def test_revoked_cleanup_requires_both_phase2_stats_null(
@@ -1250,17 +1481,47 @@ def _repair_completion_bindings(
     safe_runtime: SafeRuntimeFixture,
     suffix: tuple[PlannedAction, ...],
 ) -> BootstrapPlanBindings:
-    bindings = _fresh_bootstrap_bindings(safe_runtime)
+    codes = {row.code for row in suffix}
+    mutation_by_identity = {
+        CredentialIdentity.SUPER_ADMIN: ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN,
+        CredentialIdentity.ORGANIZATION_ADMIN: ActionCode.BOOTSTRAP_CREATE_ORGANIZATION,
+        CredentialIdentity.RUNTIME_USER: ActionCode.BOOTSTRAP_CREATE_RUNTIME_IDENTITY,
+    }
+    credentials = tuple(
+        replace(
+            row,
+            current_file=(
+                None
+                if mutation_by_identity[row.identity] in codes
+                else row.current_file
+            ),
+            candidate_file=(
+                safe_runtime.stat_binding(
+                    f"credential:{row.identity.value}:candidate",
+                    500 + index,
+                )
+                if mutation_by_identity[row.identity] in codes
+                else None
+            ),
+        )
+        for index, row in enumerate(
+            safe_runtime.bootstrap_plan_bindings.credentials or ()
+        )
+    )
     has_probe = any(
         row.code is ActionCode.BOOTSTRAP_PROBE_INVITATION for row in suffix
     )
     has_create_key = any(
         row.code is ActionCode.BOOTSTRAP_CREATE_API_KEY for row in suffix
     )
+    probe = _fresh_bootstrap_bindings(safe_runtime).invitation_probe
     return replace(
-        bindings,
-        invitation_probe=bindings.invitation_probe if has_probe else None,
+        safe_runtime.bootstrap_plan_bindings,
+        credentials=credentials,
+        invitation_probe=probe if has_probe else None,
         api_key_capture=None if has_create_key else _capture_binding(safe_runtime),
+        api_key_cleanup=None,
+        phase2_env_file=_phase2_stat(),
     )
 
 
@@ -1452,11 +1713,7 @@ def test_fresh_bootstrap_requires_exact_frozen_binding_projection(
 ) -> None:
     actions = _legal_branch("bootstrap", LicenseMode.OFFLINE)
     valid = _fresh_bootstrap_bindings(safe_runtime)
-    credentials = list(valid.credentials or ())
-    credentials[0] = replace(credentials[0], candidate_file=None)
-    invalid = (
-        replace(valid, invitation_probe=None),
-        replace(valid, api_key_capture=_capture_binding(safe_runtime)),
+    with pytest.raises(DeploymentError):
         replace(
             valid,
             api_key_cleanup=ApiKeyCleanupPlanBinding(
@@ -1470,19 +1727,335 @@ def test_fresh_bootstrap_requires_exact_frozen_binding_projection(
                 observed_captured_file=None,
                 phase2_env_file=valid.phase2_env_file,
             ),
-        ),
+        )
+    invalid: list[BootstrapPlanBindings] = [
+        replace(valid, invitation_probe=None),
+        replace(valid, api_key_capture=_capture_binding(safe_runtime)),
         replace(valid, phase2_env_file=None),
-        replace(valid, credentials=tuple(credentials)),
-    )
+    ]
+    credentials = valid.credentials or ()
+    for index, row in enumerate(credentials):
+        missing_candidate = list(credentials)
+        missing_candidate[index] = replace(row, candidate_file=None)
+        invalid.append(replace(valid, credentials=tuple(missing_candidate)))
+
+        invented_current = list(credentials)
+        invented_current[index] = replace(
+            row,
+            current_file=safe_runtime.stat_binding(
+                f"credential:{row.identity.value}:current",
+                860 + index,
+            ),
+        )
+        invalid.append(replace(valid, credentials=tuple(invented_current)))
     for bindings in invalid:
-        with pytest.raises(DeploymentError):
+        _assert_registry_and_plan_create_reject_bindings(
+            safe_runtime,
+            operation=Operation.BOOTSTRAP,
+            mode=LicenseMode.OFFLINE,
+            actions=actions,
+            bindings=bindings,
+        )
+
+
+def _assert_registry_and_plan_create_reject_bindings(
+    safe_runtime: SafeRuntimeFixture,
+    *,
+    operation: Operation,
+    mode: LicenseMode,
+    actions: tuple[PlannedAction, ...],
+    bindings: BootstrapPlanBindings | None,
+) -> None:
+    with pytest.raises(DeploymentError):
+        ActionRegistry.validate(
+            operation,
+            RuntimeProfile.DEVELOPMENT,
+            mode,
+            bindings,
+            actions,
+        )
+    with pytest.raises(DeploymentError):
+        DeploymentPlan.create(
+            snapshot=safe_runtime.make_snapshot(),
+            operation=operation,
+            profile=RuntimeProfile.DEVELOPMENT,
+            license_mode=mode,
+            bootstrap_bindings=bindings,
+            actions=actions,
+            now=NOW,
+            plan_nonce="f" * 32,
+        )
+
+
+@pytest.mark.parametrize(
+    ("branch", "operation", "mode"),
+    (
+        ("start-active", Operation.START, LicenseMode.OFFLINE),
+        ("start-stopped", Operation.START, LicenseMode.ONLINE),
+        ("restart-api", Operation.RESTART_API, LicenseMode.OFFLINE),
+        ("restart-frontend", Operation.RESTART_FRONTEND, LicenseMode.OFFLINE),
+        ("switch-license", Operation.SWITCH_LICENSE, LicenseMode.ONLINE),
+        ("repair-readiness", Operation.REPAIR, LicenseMode.ONLINE),
+        ("repair-budget", Operation.REPAIR, LicenseMode.ONLINE),
+    ),
+)
+def test_operational_binding_projection_requires_currents_and_phase2(
+    safe_runtime: SafeRuntimeFixture,
+    branch: str,
+    operation: Operation,
+    mode: LicenseMode,
+) -> None:
+    actions = _legal_branch(branch, mode)
+    valid = safe_runtime.bootstrap_plan_bindings
+    ActionRegistry.validate(
+        operation,
+        RuntimeProfile.DEVELOPMENT,
+        mode,
+        valid,
+        actions,
+    )
+
+    credentials = valid.credentials or ()
+    invalid: list[BootstrapPlanBindings] = [replace(valid, phase2_env_file=None)]
+    for index, row in enumerate(credentials):
+        missing_current = list(credentials)
+        missing_current[index] = replace(row, current_file=None)
+        invalid.append(replace(valid, credentials=tuple(missing_current)))
+
+        unexpected_candidate = list(credentials)
+        unexpected_candidate[index] = replace(
+            row,
+            candidate_file=safe_runtime.stat_binding(
+                f"credential:{row.identity.value}:candidate",
+                810 + index,
+            ),
+        )
+        invalid.append(replace(valid, credentials=tuple(unexpected_candidate)))
+
+    invalid.extend(
+        (
+            replace(valid, invitation_probe=_fresh_bootstrap_bindings(safe_runtime).invitation_probe),
+            replace(valid, api_key_capture=_capture_binding(safe_runtime)),
+        )
+    )
+    for changed in invalid:
+        _assert_registry_and_plan_create_reject_bindings(
+            safe_runtime,
+            operation=operation,
+            mode=mode,
+            actions=actions,
+            bindings=changed,
+        )
+
+
+def _binding_stat_substitutions(
+    bindings: BootstrapPlanBindings,
+) -> tuple[BootstrapPlanBindings, ...]:
+    changed: list[BootstrapPlanBindings] = []
+    credentials = bindings.credentials or ()
+    for index, row in enumerate(credentials):
+        for field in ("current_file", "candidate_file"):
+            original = getattr(row, field)
+            if original is None:
+                continue
+            rows = list(credentials)
+            rows[index] = replace(
+                row,
+                **{field: replace(original, ino=original.ino + 10_000)},
+            )
+            changed.append(replace(bindings, credentials=tuple(rows)))
+    if bindings.invitation_probe is not None:
+        for field in ("descriptor_file", "password_file"):
+            original = getattr(bindings.invitation_probe, field)
+            changed.append(
+                replace(
+                    bindings,
+                    invitation_probe=replace(
+                        bindings.invitation_probe,
+                        **{field: replace(original, ino=original.ino + 10_000)},
+                    ),
+                )
+            )
+    if bindings.api_key_capture is not None:
+        changed.append(
+            replace(
+                bindings,
+                api_key_capture=replace(
+                    bindings.api_key_capture,
+                    captured_file=replace(
+                        bindings.api_key_capture.captured_file,
+                        ino=bindings.api_key_capture.captured_file.ino + 10_000,
+                    ),
+                ),
+            )
+        )
+    if bindings.phase2_env_file is not None:
+        changed.append(
+            replace(
+                bindings,
+                phase2_env_file=replace(
+                    bindings.phase2_env_file,
+                    ino=bindings.phase2_env_file.ino + 10_000,
+                ),
+            )
+        )
+    return tuple(changed)
+
+
+def test_every_completion_suffix_has_exact_pre_action_binding_projection(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    full = _c_full()
+    probe_resolved = tuple(
+        row
+        for row in full
+        if row.code is not ActionCode.BOOTSTRAP_PROBE_INVITATION
+    )
+    prefix = (
+        _action(ActionCode.GATEWAY_FAIL_CLOSED),
+        *_n_actions(LicenseMode.OFFLINE),
+        _action(ActionCode.PROCESS_START_FRONTEND),
+        _action(ActionCode.READINESS_REQUIRE_API_LOOPBACK),
+    )
+    case_number = 1
+    for language in (full, probe_resolved):
+        for start in range(len(language)):
+            suffix = language[start:]
+            actions = prefix + suffix + _p_actions()
+            valid = _repair_completion_bindings(safe_runtime, suffix)
             ActionRegistry.validate(
-                Operation.BOOTSTRAP,
+                Operation.REPAIR,
                 RuntimeProfile.DEVELOPMENT,
                 LicenseMode.OFFLINE,
-                bindings,
+                valid,
                 actions,
             )
+
+            credentials = valid.credentials or ()
+            invalid: list[BootstrapPlanBindings] = [
+                replace(valid, phase2_env_file=None),
+            ]
+            for index, row in enumerate(credentials):
+                for field in ("current_file", "candidate_file"):
+                    original = getattr(row, field)
+                    rows = list(credentials)
+                    if original is not None:
+                        rows[index] = replace(row, **{field: None})
+                    else:
+                        rows[index] = replace(
+                            row,
+                            **{
+                                field: safe_runtime.stat_binding(
+                                    f"credential:{row.identity.value}:{field[:-5]}",
+                                    820 + index,
+                                )
+                            },
+                        )
+                    invalid.append(replace(valid, credentials=tuple(rows)))
+
+            has_probe = any(
+                row.code is ActionCode.BOOTSTRAP_PROBE_INVITATION
+                for row in suffix
+            )
+            has_create_key = any(
+                row.code is ActionCode.BOOTSTRAP_CREATE_API_KEY for row in suffix
+            )
+            invalid.append(
+                replace(
+                    valid,
+                    invitation_probe=(
+                        None
+                        if has_probe
+                        else _fresh_bootstrap_bindings(safe_runtime).invitation_probe
+                    ),
+                )
+            )
+            invalid.append(
+                replace(
+                    valid,
+                    api_key_capture=(
+                        _capture_binding(safe_runtime)
+                        if has_create_key
+                        else None
+                    ),
+                )
+            )
+            for changed in invalid:
+                _assert_registry_and_plan_create_reject_bindings(
+                    safe_runtime,
+                    operation=Operation.REPAIR,
+                    mode=LicenseMode.OFFLINE,
+                    actions=actions,
+                    bindings=changed,
+                )
+
+            for changed in _binding_stat_substitutions(valid):
+                plan = DeploymentPlan.create(
+                    snapshot=safe_runtime.make_snapshot(),
+                    operation=Operation.REPAIR,
+                    profile=RuntimeProfile.DEVELOPMENT,
+                    license_mode=LicenseMode.OFFLINE,
+                    bootstrap_bindings=valid,
+                    actions=actions,
+                    now=NOW,
+                    plan_nonce=f"{case_number:032x}",
+                )
+                case_number += 1
+                path, digest = write_plan(plan, safe_runtime.plans_dir)
+                reservation = reserve_plan_attempt(
+                    path,
+                    digest,
+                    NOW,
+                    safe_runtime.plans_dir,
+                    application_id=f"{case_number:032x}",
+                )
+                case_number += 1
+                lease = acquire_deployment_write_lease(
+                    safe_runtime.lock_path,
+                    reservation,
+                )
+                try:
+                    with pytest.raises(DeploymentError) as caught:
+                        load_confirmed_plan(
+                            reservation,
+                            plan.snapshot,
+                            changed,
+                            lease,
+                        )
+                    assert caught.value.code == "CMMS-E012"
+                finally:
+                    lease.close()
+
+
+def test_discovery_binding_projection_allows_both_receipt_dependent_probe_forms(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    actions = _legal_branch("repair-discovery", LicenseMode.OFFLINE)
+    without_probe = safe_runtime.bootstrap_plan_bindings
+    with_probe = replace(
+        without_probe,
+        invitation_probe=_fresh_bootstrap_bindings(safe_runtime).invitation_probe,
+    )
+    for bindings in (without_probe, with_probe):
+        ActionRegistry.validate(
+            Operation.REPAIR,
+            RuntimeProfile.DEVELOPMENT,
+            LicenseMode.OFFLINE,
+            bindings,
+            actions,
+        )
+
+    # Receipt probe disposition is deliberately not one of ActionRegistry's
+    # five inputs. Task 9 must replay the iff old-slot condition; Task 2 only
+    # permits the slot on discovery and exact-compares its complete plan-bound
+    # descriptor/password projection during confirmation.
+    _assert_registry_and_plan_create_reject_bindings(
+        safe_runtime,
+        operation=Operation.REPAIR,
+        mode=LicenseMode.ONLINE,
+        actions=_legal_branch("repair-readiness", LicenseMode.ONLINE),
+        bindings=with_probe,
+    )
 
 
 def _rehash_plan_mapping(value: dict[str, object]) -> dict[str, object]:
@@ -1504,6 +2077,286 @@ def test_plan_create_hashes_exact_30_minute_immutable_payload(
     assert plan.to_mapping()["plan_nonce"] == "a" * 32
     with pytest.raises(FrozenInstanceError):
         plan.plan_nonce = "b" * 32  # type: ignore[misc]
+
+
+def test_exact_schema_int_rejects_json_true_without_hash_normalization(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    plan = safe_runtime.make_plan(plan_nonce="0" * 32)
+    plan_mapping = plan.to_mapping()
+    plan_mapping["schema_version"] = True
+    with pytest.raises(DeploymentError):
+        DeploymentPlan.from_mapping(plan_mapping)
+
+    plan_path = safe_runtime.private_file(
+        f".runtime/plans/cmms-development/{plan.plan_sha256}.json",
+        canonical_json_bytes(plan_mapping),
+    )
+    with pytest.raises(DeploymentError):
+        reserve_plan_attempt(
+            plan_path,
+            plan.plan_sha256,
+            plan.created_at,
+            safe_runtime.plans_dir,
+            application_id="1" * 32,
+        )
+    assert not (
+        safe_runtime.plans_dir / f"{plan.plan_sha256}.application.json"
+    ).exists()
+
+    application_mapping = PlanApplicationRecord.attempted(
+        "2" * 64,
+        NOW,
+        "3" * 32,
+    ).to_mapping()
+    application_mapping["schema_version"] = True
+    with pytest.raises(DeploymentError):
+        PlanApplicationRecord.from_mapping(application_mapping)
+    application_path = safe_runtime.private_file(
+        ".runtime/plans/cmms-development/" + "2" * 64 + ".application.json",
+        canonical_json_bytes(application_mapping),
+    )
+    with pytest.raises(DeploymentError):
+        PlanApplicationRecord.load(application_path)
+
+    state_mapping = _state_mapping()
+    state_mapping["schema_version"] = True
+    with pytest.raises(DeploymentError):
+        StateRecord.from_bytes(canonical_json_bytes(state_mapping))
+
+
+def test_nested_structural_mutation_matrix_is_fail_closed(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    plan = safe_runtime.make_plan(plan_nonce="4" * 32)
+    invitation = _fresh_bootstrap_bindings(safe_runtime).invitation_probe
+    assert invitation is not None
+    records = (
+        (
+            "source",
+            SourceBinding.from_mapping,
+            plan.snapshot.source.to_mapping(),
+            (
+                "root_sha",
+                "root_dirty_fingerprint",
+                "root_status",
+                "cmms_gitlink",
+                "cmms_head",
+                "cmms_dirty_fingerprint",
+                "cmms_status",
+            ),
+            {
+                "root_sha": True,
+                "root_dirty_fingerprint": None,
+                "root_status": 1,
+                "cmms_gitlink": False,
+                "cmms_head": None,
+                "cmms_dirty_fingerprint": 1,
+                "cmms_status": "UNKNOWN",
+            },
+        ),
+        (
+            "snapshot",
+            DeploymentSnapshot.from_mapping,
+            plan.snapshot.to_mapping(),
+            (
+                "source",
+                "config_sha256",
+                "toolchain_manifest_sha256",
+                "sensitive_manifest_sha256",
+                "unit_generation",
+                "state_generation",
+                "state_sha256",
+            ),
+            {
+                "source": None,
+                "config_sha256": True,
+                "toolchain_manifest_sha256": None,
+                "sensitive_manifest_sha256": 1,
+                "unit_generation": False,
+                "state_generation": True,
+                "state_sha256": 7,
+            },
+        ),
+        (
+            "secure-stat",
+            SecureFileStatBinding.from_mapping,
+            _phase2_stat().to_mapping(),
+            ("logical_file", "dev", "ino", "size", "mtime_ns", "ctime_ns"),
+            {
+                "logical_file": None,
+                "dev": True,
+                "ino": False,
+                "size": True,
+                "mtime_ns": False,
+                "ctime_ns": True,
+            },
+        ),
+        (
+            "credential",
+            CredentialPlanBinding.from_mapping,
+            (safe_runtime.bootstrap_plan_bindings.credentials or ())[0].to_mapping(),
+            ("identity", "canonical_email", "current_file", "candidate_file"),
+            {
+                "identity": None,
+                "canonical_email": 1,
+                "current_file": True,
+                "candidate_file": False,
+            },
+        ),
+        (
+            "invitation",
+            InvitationProbePlanBinding.from_mapping,
+            invitation.to_mapping(),
+            ("slot_id", "canonical_email", "descriptor_file", "password_file"),
+            {
+                "slot_id": 1,
+                "canonical_email": True,
+                "descriptor_file": None,
+                "password_file": False,
+            },
+        ),
+        (
+            "capture",
+            ApiKeyCapturePlanBinding.from_mapping,
+            _capture_binding(safe_runtime).to_mapping(),
+            (
+                "attempt_id",
+                "api_key_id",
+                "label",
+                "runtime_user_id",
+                "company_id",
+                "captured_file",
+            ),
+            {
+                "attempt_id": None,
+                "api_key_id": True,
+                "label": False,
+                "runtime_user_id": True,
+                "company_id": False,
+                "captured_file": None,
+            },
+        ),
+        (
+            "cleanup",
+            ApiKeyCleanupPlanBinding.from_mapping,
+            (_cleanup_bindings(safe_runtime, ApiKeyCleanupOutcome.PUBLISHED).api_key_cleanup).to_mapping(),  # type: ignore[union-attr]
+            (
+                "attempt_id",
+                "api_key_id",
+                "terminal_outcome",
+                "historical_captured_file",
+                "observed_captured_file",
+                "phase2_env_file",
+            ),
+            {
+                "attempt_id": True,
+                "api_key_id": False,
+                "terminal_outcome": 1,
+                "historical_captured_file": None,
+                "observed_captured_file": True,
+                "phase2_env_file": False,
+            },
+        ),
+        (
+            "bootstrap-bindings",
+            BootstrapPlanBindings.from_mapping,
+            safe_runtime.bootstrap_plan_bindings.to_mapping(),
+            (
+                "credentials",
+                "invitation_probe",
+                "api_key_capture",
+                "api_key_cleanup",
+                "role_external_id",
+                "api_key_label",
+                "phase2_env_logical_id",
+                "phase2_env_file",
+            ),
+            {
+                "credentials": {},
+                "invitation_probe": True,
+                "api_key_capture": False,
+                "api_key_cleanup": True,
+                "role_external_id": False,
+                "api_key_label": 1,
+                "phase2_env_logical_id": None,
+                "phase2_env_file": True,
+            },
+        ),
+        (
+            "action",
+            PlannedAction.from_mapping,
+            _c_full()[3].to_mapping(),
+            ("code", "target_kind", "target_id"),
+            {"code": True, "target_kind": False, "target_id": 1},
+        ),
+        (
+            "plan",
+            DeploymentPlan.from_mapping,
+            plan.to_mapping(),
+            (
+                "schema_version",
+                "record_type",
+                "plan_sha256",
+                "plan_nonce",
+                "created_at",
+                "expires_at",
+                "snapshot",
+                "operation",
+                "profile",
+                "license_mode",
+                "bootstrap_bindings",
+                "actions",
+            ),
+            {
+                "schema_version": True,
+                "record_type": False,
+                "plan_sha256": None,
+                "plan_nonce": True,
+                "created_at": None,
+                "expires_at": False,
+                "snapshot": True,
+                "operation": 1,
+                "profile": False,
+                "license_mode": None,
+                "bootstrap_bindings": True,
+                "actions": None,
+            },
+        ),
+    )
+    for name, loader, valid, fields, wrong_values in records:
+        assert tuple(valid) == fields, name
+        for field in fields:
+            missing = copy.deepcopy(valid)
+            del missing[field]
+            with pytest.raises(DeploymentError):
+                loader(missing)
+
+            wrong = copy.deepcopy(valid)
+            wrong[field] = copy.deepcopy(wrong_values[field])
+            with pytest.raises(DeploymentError):
+                loader(wrong)
+
+        unknown = copy.deepcopy(valid)
+        unknown["unknown"] = None
+        with pytest.raises(DeploymentError):
+            loader(unknown)
+
+    snapshot_absent = plan.snapshot.to_mapping()
+    snapshot_absent.update(state_generation=0, state_sha256="7" * 64)
+    with pytest.raises(DeploymentError):
+        DeploymentSnapshot.from_mapping(snapshot_absent)
+    snapshot_present = plan.snapshot.to_mapping()
+    snapshot_present.update(state_generation=7, state_sha256=None)
+    with pytest.raises(DeploymentError):
+        DeploymentSnapshot.from_mapping(snapshot_present)
+
+    action = _c_full()[3].to_mapping()
+    for field in ("target_kind", "target_id"):
+        mismatch = dict(action)
+        mismatch[field] = None
+        with pytest.raises(DeploymentError):
+            PlannedAction.from_mapping(mismatch)
 
 
 @pytest.mark.parametrize(
@@ -2155,6 +3008,97 @@ def test_gateway_authority_exact_graph_and_replay_rejection(
     lease.close()
 
 
+def test_opaque_capability_matrix_rejects_copy_deepcopy_and_pickle(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    _plan, reservation, lease, confirmed = _confirmed_plan(safe_runtime)
+    adapter = safe_runtime.gateway_authority(confirmed, lease)
+    challenge = adapter.challenge()
+    proof = adapter.prove(challenge)
+    evidence = adapter.parts.evidence_issuer.issue(confirmed, lease, proof)
+    context = claim_plan_application(
+        confirmed,
+        safe_runtime.plans_dir,
+        lease,
+        evidence,
+    )
+    capabilities = (
+        confirmed,
+        reservation,
+        lease,
+        challenge,
+        proof,
+        evidence,
+        context,
+    )
+    try:
+        for capability in capabilities:
+            for operation in (copy.copy, copy.deepcopy, pickle.dumps):
+                with pytest.raises(DeploymentError):
+                    operation(capability)
+    finally:
+        lease.close()
+
+
+def test_gateway_authority_rejects_cross_application_and_cross_lease(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    plan, reservation, lease, confirmed = _confirmed_plan(safe_runtime)
+    other_application = PlanApplicationRecord.attempted(
+        plan.plan_sha256,
+        NOW,
+        "d" * 32,
+    )
+    other_reservation = records_module.PlanAttemptReservation(
+        records_module._CAPABILITY_TOKEN,
+        plan,
+        other_application,
+        reservation.application_path,
+    )
+    other_confirmed = records_module.ConfirmedDeploymentPlan(
+        records_module._CAPABILITY_TOKEN,
+        plan,
+        other_reservation,
+        lease,
+    )
+    other_lease = records_module.DeploymentWriteLease(
+        records_module._CAPABILITY_TOKEN,
+        os.dup(lease._fd),
+        os.dup(lease._directory_fd),
+        reservation,
+        lease._path,
+        lease._lock_identity,
+        lease._directory_identity,
+    )
+    adapter = safe_runtime.gateway_authority(confirmed, lease)
+    challenge = adapter.challenge()
+    proof = adapter.prove(challenge)
+    try:
+        with pytest.raises(DeploymentError):
+            adapter.parts.evidence_issuer.issue(other_confirmed, lease, proof)
+        with pytest.raises(DeploymentError):
+            adapter.parts.evidence_issuer.issue(confirmed, other_lease, proof)
+
+        evidence = adapter.parts.evidence_issuer.issue(confirmed, lease, proof)
+        with pytest.raises(DeploymentError):
+            claim_plan_application(
+                other_confirmed,
+                safe_runtime.plans_dir,
+                lease,
+                evidence,
+            )
+        with pytest.raises(DeploymentError):
+            claim_plan_application(
+                confirmed,
+                safe_runtime.plans_dir,
+                other_lease,
+                evidence,
+            )
+    finally:
+        other_lease.close()
+        lease.close()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -2320,23 +3264,122 @@ def test_state_record_rejects_every_missing_field_and_unknown_field() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("generation", 0),
+        ("schema_version", True),
+        ("record_type", True),
+        ("generation", True),
         ("root_sha", "A" * 40),
+        ("root_dirty_fingerprint", "A" * 64),
         ("root_status", "UNKNOWN"),
+        ("cmms_gitlink", "A" * 40),
+        ("cmms_head", "A" * 40),
+        ("cmms_dirty_fingerprint", "A" * 64),
+        ("cmms_status", "UNKNOWN"),
+        ("config_sha256", "A" * 64),
+        ("toolchain_manifest_sha256", "A" * 64),
+        ("sensitive_manifest_sha256", "A" * 64),
+        ("api_artifact_sha256", "A" * 64),
+        ("frontend_lock_sha256", "A" * 64),
+        ("controller_entrypoint_sha256", "A" * 64),
+        ("controller_package_sha256", "A" * 64),
         ("unit_generation", "short"),
         ("compose_project", "other"),
         ("postgres_volume_name", "other"),
+        ("postgres_volume_identity", "A" * 64),
+        ("minio_volume_name", "other"),
+        ("minio_volume_identity", "A" * 64),
+        ("api_main_pid", True),
+        ("api_process_start_ticks", True),
+        ("frontend_main_pid", True),
+        ("frontend_process_start_ticks", True),
         ("docker_gateway_ipv4", "0.0.0.0"),
+        ("loopback_gateway_sha256", True),
+        ("gateway_generation", True),
+        ("gateway_mode", "UNKNOWN"),
+        ("license_mode", "UNKNOWN"),
+        ("license_guard_generation", True),
+        ("online_budget_ledger_sha256", True),
+        ("latest_budget_debit_id", True),
+        ("latest_budget_sequence", True),
         ("latest_budget_local_date", "2026-02-30"),
+        ("bootstrap_receipt_sha256", True),
+        ("bootstrap_state", "UNKNOWN"),
+        ("last_plan_sha256", "A" * 64),
+        ("last_operation", "UNKNOWN"),
         ("last_transition_code", "not lowercase"),
         ("updated_at", "2026-07-31T12:00:00Z"),
     ],
 )
-def test_state_record_rejects_invalid_scalar_grammar(field: str, value: object) -> None:
+def test_state_scalar_matrix_rejects_every_invalid_grammar_class(
+    field: str,
+    value: object,
+) -> None:
     mapping = _state_mapping()
     mapping[field] = value
     with pytest.raises(DeploymentError):
         StateRecord.from_mapping(mapping)
+
+
+def test_state_scalar_matrix_rejects_null_outside_frozen_nullable_fields() -> None:
+    nullable = {
+        "api_main_pid",
+        "api_process_start_ticks",
+        "frontend_main_pid",
+        "frontend_process_start_ticks",
+        "docker_gateway_ipv4",
+        "loopback_gateway_sha256",
+        "gateway_generation",
+        "license_guard_generation",
+        "online_budget_ledger_sha256",
+        "latest_budget_debit_id",
+        "latest_budget_sequence",
+        "latest_budget_local_date",
+        "bootstrap_receipt_sha256",
+    }
+    value = _state_mapping()
+    assert nullable.issubset(value)
+    for field in value.keys() - nullable:
+        changed = dict(value)
+        changed[field] = None
+        with pytest.raises(DeploymentError):
+            StateRecord.from_mapping(changed)
+
+    for pair in (
+        ("api_main_pid", "api_process_start_ticks"),
+        ("frontend_main_pid", "frontend_process_start_ticks"),
+    ):
+        for field in pair:
+            changed = dict(value)
+            changed[field] = 1
+            with pytest.raises(DeploymentError):
+                StateRecord.from_mapping(changed)
+
+    gateway_values = {
+        "docker_gateway_ipv4": "172.17.0.1",
+        "loopback_gateway_sha256": "1" * 64,
+        "gateway_generation": "2" * 64,
+    }
+    for omitted in gateway_values:
+        changed = dict(value)
+        changed["gateway_mode"] = "LOOPBACK"
+        changed.update(
+            {
+                field: field_value
+                for field, field_value in gateway_values.items()
+                if field != omitted
+            }
+        )
+        with pytest.raises(DeploymentError):
+            StateRecord.from_mapping(changed)
+
+    for field, field_value in (
+        ("latest_budget_debit_id", "3" * 32),
+        ("latest_budget_sequence", 1),
+        ("latest_budget_local_date", "2026-07-31"),
+    ):
+        changed = dict(value)
+        changed[field] = field_value
+        with pytest.raises(DeploymentError):
+            StateRecord.from_mapping(changed)
 
 
 def test_state_gateway_process_guard_budget_and_bootstrap_matrices() -> None:
@@ -2498,6 +3541,19 @@ def test_fixed_record_schema_rejects_each_changed_fixed_literal(
         candidate[field] = "changed"
         with pytest.raises(DeploymentError):
             require_exact_record_fields(candidate, schema)
+
+
+@pytest.mark.parametrize("schema", SCHEMAS, ids=lambda item: item.record_name)
+def test_fixed_record_schema_rejects_bool_for_every_fixed_integer(
+    schema: FixedRecordSchema,
+) -> None:
+    value = _schema_value(schema)
+    for field, expected in schema.fixed_values.items():
+        if type(expected) is int:
+            changed = dict(value)
+            changed[field] = True
+            with pytest.raises(DeploymentError):
+                require_exact_record_fields(changed, schema)
 
 
 def test_receipt_structural_schemas_reject_each_other_discriminators() -> None:

@@ -258,6 +258,12 @@ def _require_string(value: object) -> str:
     return value
 
 
+def _require_literal(value: object, expected: JsonScalar) -> JsonScalar:
+    if type(value) is not type(expected) or value != expected:
+        raise _invalid_record()
+    return value  # type: ignore[return-value]
+
+
 def _require_pattern(value: object, pattern: re.Pattern[str]) -> str:
     text = _require_string(value)
     if pattern.fullmatch(text) is None:
@@ -569,7 +575,8 @@ class SecureFileStatBinding:
     ctime_ns: int
 
     def __post_init__(self) -> None:
-        if _LOGICAL_ID.fullmatch(self.logical_file) is None or "/" in self.logical_file:
+        logical_file = _require_string(self.logical_file)
+        if _LOGICAL_ID.fullmatch(logical_file) is None or "/" in logical_file:
             raise _invalid_record()
         _require_int(self.dev, minimum=1)
         _require_int(self.ino, minimum=1)
@@ -655,7 +662,7 @@ class InvitationProbePlanBinding:
             parsed = uuid.UUID(self.slot_id)
         except (ValueError, TypeError, AttributeError):
             raise _invalid_record() from None
-        if str(parsed) != self.slot_id or parsed.version != 4:
+        if str(parsed) != self.slot_id:
             raise _invalid_record()
         _canonical_email(self.canonical_email)
         if type(self.descriptor_file) is not SecureFileStatBinding or type(
@@ -747,6 +754,16 @@ class ApiKeyCleanupPlanBinding:
             raise _invalid_record()
         if self.phase2_env_file is not None and type(self.phase2_env_file) is not SecureFileStatBinding:
             raise _invalid_record()
+        if (
+            self.observed_captured_file is not None
+            and self.observed_captured_file != self.historical_captured_file
+        ):
+            raise _invalid_record()
+        if self.terminal_outcome is ApiKeyCleanupOutcome.PUBLISHED:
+            if self.phase2_env_file is None:
+                raise _invalid_record()
+        elif self.phase2_env_file is not None:
+            raise _invalid_record()
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {
@@ -791,16 +808,60 @@ class BootstrapPlanBindings:
     phase2_env_file: SecureFileStatBinding | None
 
     def __post_init__(self) -> None:
-        if self.api_key_capture is not None and self.api_key_cleanup is not None:
+        if (
+            self.invitation_probe is not None
+            and type(self.invitation_probe) is not InvitationProbePlanBinding
+        ):
+            raise _invalid_record()
+        if (
+            self.api_key_capture is not None
+            and type(self.api_key_capture) is not ApiKeyCapturePlanBinding
+        ):
+            raise _invalid_record()
+        if (
+            self.api_key_cleanup is not None
+            and type(self.api_key_cleanup) is not ApiKeyCleanupPlanBinding
+        ):
+            raise _invalid_record()
+        if (
+            self.phase2_env_file is not None
+            and type(self.phase2_env_file) is not SecureFileStatBinding
+        ):
             raise _invalid_record()
         if self.credentials is not None:
-            object.__setattr__(self, "credentials", tuple(self.credentials))
+            if type(self.credentials) is not tuple or any(
+                type(row) is not CredentialPlanBinding for row in self.credentials
+            ):
+                raise _invalid_record()
             expected = tuple(CredentialIdentity)
             actual = tuple(row.identity for row in self.credentials)
             if actual != expected or len({row.canonical_email for row in self.credentials}) != 3:
                 raise _invalid_record()
-        for value in (self.role_external_id, self.api_key_label, self.phase2_env_logical_id):
-            _require_string(value)
+            if self.api_key_cleanup is not None:
+                raise _invalid_record()
+        elif (
+            self.api_key_cleanup is None
+            or self.invitation_probe is not None
+            or self.api_key_capture is not None
+        ):
+            raise _invalid_record()
+        if self.api_key_capture is not None and self.api_key_cleanup is not None:
+            raise _invalid_record()
+        if self.api_key_cleanup is not None:
+            if self.api_key_cleanup.terminal_outcome is ApiKeyCleanupOutcome.PUBLISHED:
+                if (
+                    self.phase2_env_file is None
+                    or self.phase2_env_file != self.api_key_cleanup.phase2_env_file
+                ):
+                    raise _invalid_record()
+            elif self.phase2_env_file is not None:
+                raise _invalid_record()
+        _require_literal(self.role_external_id, "ifactory-pdm-runtime")
+        _require_literal(self.api_key_label, "ifactory-pdm-runtime")
+        _require_literal(
+            self.phase2_env_logical_id,
+            "predictive-maintenance-shadow.env",
+        )
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {
@@ -1138,6 +1199,42 @@ def _legal_completion_suffix(codes: tuple[ActionCode, ...]) -> bool:
     )
 
 
+_IDENTITY_MUTATION_ACTION = MappingProxyType(
+    {
+        CredentialIdentity.SUPER_ADMIN: ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN,
+        CredentialIdentity.ORGANIZATION_ADMIN: ActionCode.BOOTSTRAP_CREATE_ORGANIZATION,
+        CredentialIdentity.RUNTIME_USER: ActionCode.BOOTSTRAP_CREATE_RUNTIME_IDENTITY,
+    }
+)
+_COMPLETE_IDENTITY_SET = frozenset(CredentialIdentity)
+_COMPLETE_BINDING_BRANCHES = frozenset(
+    {
+        "start-active",
+        "start-stopped",
+        "restart-api",
+        "restart-frontend",
+        "switch-license",
+        "repair-readiness",
+        "repair-budget",
+    }
+)
+
+
+def _require_credential_projection(
+    bindings: BootstrapPlanBindings,
+    *,
+    current: frozenset[CredentialIdentity],
+    candidate: frozenset[CredentialIdentity],
+) -> None:
+    if bindings.credentials is None:
+        raise _invalid_record()
+    for row in bindings.credentials:
+        if (row.current_file is not None) != (row.identity in current):
+            raise _invalid_record()
+        if (row.candidate_file is not None) != (row.identity in candidate):
+            raise _invalid_record()
+
+
 def _validate_bootstrap_bindings(
     bindings: BootstrapPlanBindings | None,
     *,
@@ -1148,13 +1245,7 @@ def _validate_bootstrap_bindings(
         if bindings is not None:
             raise _invalid_record()
         return
-    if bindings is None:
-        raise _invalid_record()
-    if (
-        bindings.role_external_id != "ifactory-pdm-runtime"
-        or bindings.api_key_label != "ifactory-pdm-runtime"
-        or bindings.phase2_env_logical_id != "predictive-maintenance-shadow.env"
-    ):
+    if type(bindings) is not BootstrapPlanBindings:
         raise _invalid_record()
     if branch == "repair-cleanup":
         cleanup = bindings.api_key_cleanup
@@ -1179,44 +1270,56 @@ def _validate_bootstrap_bindings(
     codes = tuple(row.code for row in rows)
     completion_codes = tuple(code for code in codes if code in _C_CODE_SET)
     has_probe = ActionCode.BOOTSTRAP_PROBE_INVITATION in completion_codes
-    if branch == "bootstrap":
+    if branch in {"bootstrap", "repair-completion"}:
+        required_candidates = frozenset(
+            identity
+            for identity, action in _IDENTITY_MUTATION_ACTION.items()
+            if action in completion_codes
+        )
+        required_currents = _COMPLETE_IDENTITY_SET - required_candidates
+        create_key = ActionCode.BOOTSTRAP_CREATE_API_KEY in completion_codes
         if (
-            bindings.invitation_probe is None
-            or bindings.api_key_capture is not None
+            (bindings.invitation_probe is not None) != has_probe
+            or (bindings.api_key_capture is not None) != (not create_key)
             or bindings.phase2_env_file is None
-            or any(row.candidate_file is None for row in bindings.credentials)
         ):
             raise _invalid_record()
-    elif completion_codes:
-        if (bindings.invitation_probe is not None) != has_probe:
-            raise _invalid_record()
-        create_key = ActionCode.BOOTSTRAP_CREATE_API_KEY in completion_codes
-        if (bindings.api_key_capture is not None) != (not create_key):
-            raise _invalid_record()
-    elif branch not in {"repair-discovery"} and bindings.invitation_probe is not None:
-        raise _invalid_record()
-    if not completion_codes and bindings.api_key_capture is not None:
-        raise _invalid_record()
+        _require_credential_projection(
+            bindings,
+            current=required_currents,
+            candidate=required_candidates,
+        )
+        return
 
-    candidates = {row.identity: row.candidate_file for row in bindings.credentials}
-    required_candidates: set[CredentialIdentity] = set()
-    if ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN in codes:
-        required_candidates.add(CredentialIdentity.SUPER_ADMIN)
-    if ActionCode.BOOTSTRAP_CREATE_ORGANIZATION in codes:
-        required_candidates.add(CredentialIdentity.ORGANIZATION_ADMIN)
-    if (
-        ActionCode.BOOTSTRAP_CREATE_INVITATION in codes
-        or ActionCode.BOOTSTRAP_CREATE_RUNTIME_IDENTITY in codes
-    ):
-        required_candidates.add(CredentialIdentity.RUNTIME_USER)
+    if branch in _COMPLETE_BINDING_BRANCHES:
+        if (
+            bindings.invitation_probe is not None
+            or bindings.api_key_capture is not None
+            or bindings.phase2_env_file is None
+        ):
+            raise _invalid_record()
+        _require_credential_projection(
+            bindings,
+            current=_COMPLETE_IDENTITY_SET,
+            candidate=frozenset(),
+        )
+        return
+
+    if bindings.api_key_capture is not None:
+        raise _invalid_record()
+    if branch != "repair-discovery" and bindings.invitation_probe is not None:
+        raise _invalid_record()
     discard = next(
         (row for row in rows if row.code is ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE),
         None,
     )
     if discard is not None:
-        required_candidates.add(CredentialIdentity(discard.target_id))
-    if any(candidates[identity] is None for identity in required_candidates):
-        raise _invalid_record()
+        target = CredentialIdentity(discard.target_id)
+        credential = next(
+            row for row in bindings.credentials if row.identity is target
+        )
+        if credential.current_file is None or credential.candidate_file is None:
+            raise _invalid_record()
 
 
 class ActionRegistry:
@@ -1560,7 +1663,12 @@ class DeploymentPlan:
             "license_mode", "bootstrap_bindings", "actions",
         )
         _require_exact_keys(value, keys)
-        if value["schema_version"] != 1 or value["record_type"] != "cmms-deployment-plan" or type(value["actions"]) is not list:
+        if (
+            type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+            or value["record_type"] != "cmms-deployment-plan"
+            or type(value["actions"]) is not list
+        ):
             raise _invalid_record()
         return cls(
             plan_sha256=_require_hex64(value["plan_sha256"]),
@@ -1719,7 +1827,12 @@ class PlanApplicationRecord:
         if type(value) is not dict:
             raise _invalid_record()
         _require_exact_keys(value, ("schema_version", "record_type", "application_id", "application_generation", "plan_sha256", "state", "attempted_at", "claimed_at", "terminal_at", "safe_result_codes"))
-        if value["schema_version"] != 1 or value["record_type"] != "cmms-plan-application" or type(value["safe_result_codes"]) is not list:
+        if (
+            type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+            or value["record_type"] != "cmms-plan-application"
+            or type(value["safe_result_codes"]) is not list
+        ):
             raise _invalid_record()
         return cls(
             application_id=_require_hex32(value["application_id"]),
@@ -2599,7 +2712,11 @@ class StateRecord:
         if type(value) is not dict:
             raise _invalid_record()
         _require_exact_keys(value, _STATE_FIELDS)
-        if value["schema_version"] != 1 or value["record_type"] != "cmms-development-state":
+        if (
+            type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+            or value["record_type"] != "cmms-development-state"
+        ):
             raise _invalid_record()
         parsed: dict[str, JsonValue] = dict(value)  # defensive copy
         parsed["generation"] = _require_int(value["generation"], minimum=1)
