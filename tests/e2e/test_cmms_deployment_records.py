@@ -1028,9 +1028,10 @@ def _bindings_for_branch(
 def _isolated_repair_bindings(
     safe_runtime: SafeRuntimeFixture,
     branch: str,
+    discard_target: CredentialIdentity | None = None,
 ) -> BootstrapPlanBindings:
     target = (
-        CredentialIdentity.RUNTIME_USER
+        discard_target or CredentialIdentity.RUNTIME_USER
         if branch == "repair-discard"
         else None
     )
@@ -1043,7 +1044,10 @@ def _isolated_repair_bindings(
                 else None
             ),
             candidate_file=(
-                safe_runtime.stat_binding("credential:runtime-user:candidate", 799)
+                safe_runtime.stat_binding(
+                    f"credential:{row.identity.value}:candidate",
+                    799,
+                )
                 if row.identity is target
                 else None
             ),
@@ -1869,20 +1873,46 @@ def test_operational_binding_projection_requires_currents_and_phase2(
 
 
 @pytest.mark.parametrize(
-    ("branch", "mode"),
+    ("branch", "mode", "discard_target"),
     (
-        ("repair-discovery", LicenseMode.OFFLINE),
-        ("repair-revoke", LicenseMode.OFFLINE),
-        ("repair-discard", LicenseMode.ONLINE),
+        ("repair-discovery", LicenseMode.OFFLINE, None),
+        ("repair-revoke", LicenseMode.OFFLINE, None),
+        (
+            "repair-discard",
+            LicenseMode.ONLINE,
+            CredentialIdentity.SUPER_ADMIN,
+        ),
+        (
+            "repair-discard",
+            LicenseMode.ONLINE,
+            CredentialIdentity.ORGANIZATION_ADMIN,
+        ),
+        (
+            "repair-discard",
+            LicenseMode.ONLINE,
+            CredentialIdentity.RUNTIME_USER,
+        ),
     ),
 )
 def test_isolated_repair_binding_projection_flips_every_presence_bit(
     safe_runtime: SafeRuntimeFixture,
     branch: str,
     mode: LicenseMode,
+    discard_target: CredentialIdentity | None,
 ) -> None:
     actions = _legal_branch(branch, mode)
-    valid = _isolated_repair_bindings(safe_runtime, branch)
+    if discard_target is not None:
+        actions = tuple(
+            replace(row, target_id=discard_target.value)
+            if row.code is ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE
+            else row
+            for row in actions
+        )
+    valid = _isolated_repair_bindings(
+        safe_runtime,
+        branch,
+        discard_target,
+    )
     plan = DeploymentPlan.create(
         snapshot=safe_runtime.make_snapshot(),
         operation=Operation.REPAIR,
