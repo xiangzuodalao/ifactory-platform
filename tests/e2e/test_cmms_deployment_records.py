@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from e2e.support import SafeRuntimeFixture
-import ifactory_cmms_deploy.records as records_module
 from ifactory_cmms_deploy.config import BootstrapConfig, RuntimeConfig
 from ifactory_cmms_deploy.errors import DeploymentError
 from ifactory_cmms_deploy.records import (
@@ -1019,25 +1018,46 @@ def _bindings_for_branch(
         return None
     if branch == "bootstrap" or branch == "repair-completion":
         return _fresh_bootstrap_bindings(safe_runtime)
-    if branch == "repair-discard":
-        credentials = tuple(
-            replace(
-                row,
-                candidate_file=(
-                    safe_runtime.stat_binding("credential:runtime-user:candidate", 799)
-                    if row.identity is CredentialIdentity.RUNTIME_USER
-                    else row.candidate_file
-                ),
-            )
-            for row in safe_runtime.bootstrap_plan_bindings.credentials or ()
-        )
-        return replace(
-            safe_runtime.bootstrap_plan_bindings,
-            credentials=credentials,
-        )
+    if branch in {"repair-discovery", "repair-revoke", "repair-discard"}:
+        return _isolated_repair_bindings(safe_runtime, branch)
     if branch == "repair-cleanup":
         return _cleanup_bindings(safe_runtime, ApiKeyCleanupOutcome.PUBLISHED)
     return safe_runtime.bootstrap_plan_bindings
+
+
+def _isolated_repair_bindings(
+    safe_runtime: SafeRuntimeFixture,
+    branch: str,
+) -> BootstrapPlanBindings:
+    target = (
+        CredentialIdentity.RUNTIME_USER
+        if branch == "repair-discard"
+        else None
+    )
+    credentials = tuple(
+        replace(
+            row,
+            current_file=(
+                row.current_file
+                if target is None or row.identity is target
+                else None
+            ),
+            candidate_file=(
+                safe_runtime.stat_binding("credential:runtime-user:candidate", 799)
+                if row.identity is target
+                else None
+            ),
+        )
+        for row in safe_runtime.bootstrap_plan_bindings.credentials or ()
+    )
+    return replace(
+        safe_runtime.bootstrap_plan_bindings,
+        credentials=credentials,
+        invitation_probe=None,
+        api_key_capture=None,
+        api_key_cleanup=None,
+        phase2_env_file=None,
+    )
 
 
 def test_registry_rank_contains_each_action_exactly_once() -> None:
@@ -1567,7 +1587,7 @@ def test_registry_accepts_all_optional_infrastructure_families(
             Operation.REPAIR,
             RuntimeProfile.DEVELOPMENT,
             LicenseMode.OFFLINE,
-            safe_runtime.bootstrap_plan_bindings,
+            _isolated_repair_bindings(safe_runtime, "repair-discovery"),
             _frozen_order(
                 _legal_branch("repair-discovery", LicenseMode.OFFLINE)
                 + optional
@@ -1848,6 +1868,106 @@ def test_operational_binding_projection_requires_currents_and_phase2(
         )
 
 
+@pytest.mark.parametrize(
+    ("branch", "mode"),
+    (
+        ("repair-discovery", LicenseMode.OFFLINE),
+        ("repair-revoke", LicenseMode.OFFLINE),
+        ("repair-discard", LicenseMode.ONLINE),
+    ),
+)
+def test_isolated_repair_binding_projection_flips_every_presence_bit(
+    safe_runtime: SafeRuntimeFixture,
+    branch: str,
+    mode: LicenseMode,
+) -> None:
+    actions = _legal_branch(branch, mode)
+    valid = _isolated_repair_bindings(safe_runtime, branch)
+    plan = DeploymentPlan.create(
+        snapshot=safe_runtime.make_snapshot(),
+        operation=Operation.REPAIR,
+        profile=RuntimeProfile.DEVELOPMENT,
+        license_mode=mode,
+        bootstrap_bindings=valid,
+        actions=actions,
+        now=NOW,
+        plan_nonce="e" * 32,
+    )
+
+    credentials = valid.credentials or ()
+    invalid: list[BootstrapPlanBindings] = []
+    for index, row in enumerate(credentials):
+        for field, suffix in (
+            ("current_file", "current"),
+            ("candidate_file", "candidate"),
+        ):
+            original = getattr(row, field)
+            rows = list(credentials)
+            rows[index] = replace(
+                row,
+                **{
+                    field: (
+                        None
+                        if original is not None
+                        else safe_runtime.stat_binding(
+                            f"credential:{row.identity.value}:{suffix}",
+                            880 + index,
+                        )
+                    )
+                },
+            )
+            invalid.append(replace(valid, credentials=tuple(rows)))
+    invalid.append(replace(valid, phase2_env_file=_phase2_stat(889)))
+    invalid.append(replace(valid, api_key_capture=_capture_binding(safe_runtime)))
+    if branch != "repair-discovery":
+        invalid.append(
+            replace(
+                valid,
+                invitation_probe=_fresh_bootstrap_bindings(
+                    safe_runtime
+                ).invitation_probe,
+            )
+        )
+
+    for changed in invalid:
+        _assert_registry_and_plan_create_reject_bindings(
+            safe_runtime,
+            operation=Operation.REPAIR,
+            mode=mode,
+            actions=actions,
+            bindings=changed,
+        )
+        mapping = plan.to_mapping()
+        mapping["bootstrap_bindings"] = changed.to_mapping()
+        with pytest.raises(DeploymentError):
+            DeploymentPlan.from_mapping(_rehash_plan_mapping(mapping))
+
+
+def test_public_registry_and_plan_create_reject_wrong_binding_object_type(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    actions = _legal_branch("start-active", LicenseMode.OFFLINE)
+    with pytest.raises(DeploymentError):
+        ActionRegistry.validate(
+            Operation.START,
+            RuntimeProfile.DEVELOPMENT,
+            LicenseMode.OFFLINE,
+            object(),  # type: ignore[arg-type]
+            actions,
+        )
+    with pytest.raises(DeploymentError):
+        DeploymentPlan.create(
+            snapshot=safe_runtime.make_snapshot(),
+            operation=Operation.START,
+            profile=RuntimeProfile.DEVELOPMENT,
+            license_mode=LicenseMode.OFFLINE,
+            bootstrap_bindings=object(),  # type: ignore[arg-type]
+            actions=actions,
+            now=NOW,
+            plan_nonce="e" * 32,
+        )
+
+
 def _binding_stat_substitutions(
     bindings: BootstrapPlanBindings,
 ) -> tuple[BootstrapPlanBindings, ...]:
@@ -2031,7 +2151,7 @@ def test_discovery_binding_projection_allows_both_receipt_dependent_probe_forms(
     safe_runtime: SafeRuntimeFixture,
 ) -> None:
     actions = _legal_branch("repair-discovery", LicenseMode.OFFLINE)
-    without_probe = safe_runtime.bootstrap_plan_bindings
+    without_probe = _isolated_repair_bindings(safe_runtime, "repair-discovery")
     with_probe = replace(
         without_probe,
         invitation_probe=_fresh_bootstrap_bindings(safe_runtime).invitation_probe,
@@ -2056,6 +2176,56 @@ def test_discovery_binding_projection_allows_both_receipt_dependent_probe_forms(
         actions=_legal_branch("repair-readiness", LicenseMode.ONLINE),
         bindings=with_probe,
     )
+
+
+def test_discovery_confirmation_rejects_probe_stat_substitution(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    actions = _legal_branch("repair-discovery", LicenseMode.OFFLINE)
+    valid = replace(
+        _isolated_repair_bindings(safe_runtime, "repair-discovery"),
+        invitation_probe=_fresh_bootstrap_bindings(safe_runtime).invitation_probe,
+    )
+    assert valid.invitation_probe is not None
+    for index, field in enumerate(("descriptor_file", "password_file"), start=1):
+        plan = DeploymentPlan.create(
+            snapshot=safe_runtime.make_snapshot(),
+            operation=Operation.REPAIR,
+            profile=RuntimeProfile.DEVELOPMENT,
+            license_mode=LicenseMode.OFFLINE,
+            bootstrap_bindings=valid,
+            actions=actions,
+            now=NOW,
+            plan_nonce=f"{index:032x}",
+        )
+        path, digest = write_plan(plan, safe_runtime.plans_dir)
+        reservation = reserve_plan_attempt(
+            path,
+            digest,
+            NOW,
+            safe_runtime.plans_dir,
+            application_id=f"{index + 100:032x}",
+        )
+        lease = acquire_deployment_write_lease(safe_runtime.lock_path, reservation)
+        original = getattr(valid.invitation_probe, field)
+        changed = replace(
+            valid,
+            invitation_probe=replace(
+                valid.invitation_probe,
+                **{field: replace(original, ino=original.ino + 1)},
+            ),
+        )
+        try:
+            with pytest.raises(DeploymentError) as caught:
+                load_confirmed_plan(
+                    reservation,
+                    snapshot=plan.snapshot,
+                    current_bootstrap_bindings=changed,
+                    lease=lease,
+                )
+            assert caught.value.code == "CMMS-E012"
+        finally:
+            lease.close()
 
 
 def _rehash_plan_mapping(value: dict[str, object]) -> dict[str, object]:
@@ -3044,31 +3214,10 @@ def test_gateway_authority_rejects_cross_application_and_cross_lease(
     safe_runtime: SafeRuntimeFixture,
 ) -> None:
     plan, reservation, lease, confirmed = _confirmed_plan(safe_runtime)
-    other_application = PlanApplicationRecord.attempted(
-        plan.plan_sha256,
-        NOW,
-        "d" * 32,
-    )
-    other_reservation = records_module.PlanAttemptReservation(
-        records_module._CAPABILITY_TOKEN,
+    other_confirmed, other_lease = safe_runtime.cross_bound_capabilities(
         plan,
-        other_application,
-        reservation.application_path,
-    )
-    other_confirmed = records_module.ConfirmedDeploymentPlan(
-        records_module._CAPABILITY_TOKEN,
-        plan,
-        other_reservation,
-        lease,
-    )
-    other_lease = records_module.DeploymentWriteLease(
-        records_module._CAPABILITY_TOKEN,
-        os.dup(lease._fd),
-        os.dup(lease._directory_fd),
         reservation,
-        lease._path,
-        lease._lock_identity,
-        lease._directory_identity,
+        lease,
     )
     adapter = safe_runtime.gateway_authority(confirmed, lease)
     challenge = adapter.challenge()

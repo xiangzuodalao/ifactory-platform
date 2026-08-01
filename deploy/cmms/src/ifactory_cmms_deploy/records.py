@@ -1305,21 +1305,45 @@ def _validate_bootstrap_bindings(
         )
         return
 
-    if bindings.api_key_capture is not None:
-        raise _invalid_record()
-    if branch != "repair-discovery" and bindings.invitation_probe is not None:
-        raise _invalid_record()
-    discard = next(
-        (row for row in rows if row.code is ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE),
-        None,
-    )
-    if discard is not None:
-        target = CredentialIdentity(discard.target_id)
-        credential = next(
-            row for row in bindings.credentials if row.identity is target
-        )
-        if credential.current_file is None or credential.candidate_file is None:
+    if branch in {"repair-discovery", "repair-revoke"}:
+        if (
+            bindings.api_key_capture is not None
+            or bindings.phase2_env_file is not None
+            or (
+                branch == "repair-revoke"
+                and bindings.invitation_probe is not None
+            )
+        ):
             raise _invalid_record()
+        _require_credential_projection(
+            bindings,
+            current=_COMPLETE_IDENTITY_SET,
+            candidate=frozenset(),
+        )
+        return
+
+    if branch == "repair-discard":
+        if (
+            bindings.invitation_probe is not None
+            or bindings.api_key_capture is not None
+            or bindings.phase2_env_file is not None
+        ):
+            raise _invalid_record()
+        discard = next(
+            row
+            for row in rows
+            if row.code is ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE
+        )
+        target = CredentialIdentity(discard.target_id)
+        target_set = frozenset({target})
+        _require_credential_projection(
+            bindings,
+            current=target_set,
+            candidate=target_set,
+        )
+        return
+
+    raise _invalid_record()
 
 
 class ActionRegistry:
@@ -1342,6 +1366,10 @@ class ActionRegistry:
             or type(profile) is not RuntimeProfile
             or type(license_mode) is not LicenseMode
             or type(actions) not in {tuple, list}
+            or (
+                bootstrap_bindings is not None
+                and type(bootstrap_bindings) is not BootstrapPlanBindings
+            )
         ):
             raise _invalid_record()
         rows = tuple(actions)
@@ -1586,6 +1614,11 @@ class DeploymentPlan:
         now: datetime,
         plan_nonce: str,
     ) -> DeploymentPlan:
+        if (
+            bootstrap_bindings is not None
+            and type(bootstrap_bindings) is not BootstrapPlanBindings
+        ):
+            raise _invalid_record()
         nonce = _require_hex32(plan_nonce)
         created = _parse_utc(_format_utc(now))
         expires = created + timedelta(minutes=30)

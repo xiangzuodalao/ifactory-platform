@@ -15,15 +15,20 @@ from ifactory_cmms_deploy.records import (
     BootstrapPlanBindings,
     CredentialIdentity,
     CredentialPlanBinding,
+    ConfirmedDeploymentPlan,
     DeploymentPlan,
     DeploymentSnapshot,
+    DeploymentWriteLease,
     LicenseMode,
     Operation,
+    PlanApplicationRecord,
+    PlanAttemptReservation,
     PlannedAction,
     RuntimeProfile,
     SecureFileStatBinding,
     SourceBinding,
     SourceStatus,
+    _CAPABILITY_TOKEN,
     _create_gateway_fail_closed_authority_parts,
     acquire_deployment_write_lease,
     claim_plan_application,
@@ -212,6 +217,41 @@ class SafeRuntimeFixture:
         lease: Any,
     ) -> GatewayAuthorityTestAdapter:
         return GatewayAuthorityTestAdapter(confirmed, lease)
+
+    def cross_bound_capabilities(
+        self,
+        plan: Any,
+        reservation: Any,
+        lease: Any,
+    ) -> tuple[Any, Any]:
+        """Create deliberately mismatched capabilities for adversarial tests."""
+        other_application = PlanApplicationRecord.attempted(
+            plan.plan_sha256,
+            plan.created_at,
+            "d" * 32,
+        )
+        other_reservation = PlanAttemptReservation(
+            _CAPABILITY_TOKEN,
+            plan,
+            other_application,
+            reservation.application_path,
+        )
+        other_confirmed = ConfirmedDeploymentPlan(
+            _CAPABILITY_TOKEN,
+            plan,
+            other_reservation,
+            lease,
+        )
+        other_lease = DeploymentWriteLease(
+            _CAPABILITY_TOKEN,
+            os.dup(lease._fd),
+            os.dup(lease._directory_fd),
+            reservation,
+            lease._path,
+            lease._lock_identity,
+            lease._directory_identity,
+        )
+        return other_confirmed, other_lease
 
     def claimed_context(
         self,
