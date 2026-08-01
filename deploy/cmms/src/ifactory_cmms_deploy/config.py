@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import DeploymentError
@@ -166,36 +166,36 @@ class RuntimeConfig:
     frontend_port: str
     frontend_api_url: str
 
-    compose_project: str = "ifactory-cmms-dev"
-    public_browser_origin: str = "http://cmms.localhost:3000"
-    host_health_origin: str = "http://127.0.0.1:3000"
-    container_origin: str = "http://host.docker.internal:3000"
-    api_bind: str = "127.0.0.1:8082"
-    frontend_bind: str = "127.0.0.1:3001"
-    postgres_bind: str = "127.0.0.1:5433"
-    minio_api_bind: str = "127.0.0.1:9000"
-    minio_console_bind: str = "127.0.0.1:9001"
-    db_url: str = "127.0.0.1:5433/atlas"
-    public_api_url: str = "http://cmms.localhost:3000/api"
-    public_front_url: str = "http://cmms.localhost:3000"
-    public_minio_endpoint: str = "http://cmms.localhost:3000/storage"
-    storage_type: str = "MINIO"
-    minio_bucket: str = "atlas-bucket"
-    minio_endpoint: str = "http://127.0.0.1:9000"
-    minio_region_name: str = "us-east-1"
-    sigv4_service: str = "s3"
-    mail_recipients: str = ""
-    intercom_token: str = ""
-    invitation_via_email: bool = True
-    enable_email_notifications: bool = False
-    enable_mail_health_check: bool = False
-    enable_cors: bool = False
-    rate_limit_enabled: bool = True
-    enable_sso: bool = False
-    ldap_enabled: bool = False
-    cloud_version: bool = False
-    license_fingerprint_required: bool = True
-    timezone: str = "Asia/Shanghai"
+    compose_project: str = field(default="ifactory-cmms-dev", init=False)
+    public_browser_origin: str = field(default="http://cmms.localhost:3000", init=False)
+    host_health_origin: str = field(default="http://127.0.0.1:3000", init=False)
+    container_origin: str = field(default="http://host.docker.internal:3000", init=False)
+    api_bind: str = field(default="127.0.0.1:8082", init=False)
+    frontend_bind: str = field(default="127.0.0.1:3001", init=False)
+    postgres_bind: str = field(default="127.0.0.1:5433", init=False)
+    minio_api_bind: str = field(default="127.0.0.1:9000", init=False)
+    minio_console_bind: str = field(default="127.0.0.1:9001", init=False)
+    db_url: str = field(default="127.0.0.1:5433/atlas", init=False)
+    public_api_url: str = field(default="http://cmms.localhost:3000/api", init=False)
+    public_front_url: str = field(default="http://cmms.localhost:3000", init=False)
+    public_minio_endpoint: str = field(default="http://cmms.localhost:3000/storage", init=False)
+    storage_type: str = field(default="MINIO", init=False)
+    minio_bucket: str = field(default="atlas-bucket", init=False)
+    minio_endpoint: str = field(default="http://127.0.0.1:9000", init=False)
+    minio_region_name: str = field(default="us-east-1", init=False)
+    sigv4_service: str = field(default="s3", init=False)
+    mail_recipients: str = field(default="", init=False)
+    intercom_token: str = field(default="", init=False)
+    invitation_via_email: bool = field(default=True, init=False)
+    enable_email_notifications: bool = field(default=False, init=False)
+    enable_mail_health_check: bool = field(default=False, init=False)
+    enable_cors: bool = field(default=False, init=False)
+    rate_limit_enabled: bool = field(default=True, init=False)
+    enable_sso: bool = field(default=False, init=False)
+    ldap_enabled: bool = field(default=False, init=False)
+    cloud_version: bool = field(default=False, init=False)
+    license_fingerprint_required: bool = field(default=True, init=False)
+    timezone: str = field(default="Asia/Shanghai", init=False)
 
     @classmethod
     def load(cls, root: Path) -> RuntimeConfig:
@@ -286,9 +286,9 @@ class BootstrapConfig:
     organization_admin_candidate_password_file: Path | None
     runtime_user_current_password_file: Path | None
     runtime_user_candidate_password_file: Path | None
-    super_admin_email: str = "superadmin@test.com"
-    role_external_id: str = "ifactory-pdm-runtime"
-    api_key_label: str = "ifactory-pdm-runtime"
+    super_admin_email: str = field(default="superadmin@test.com", init=False)
+    role_external_id: str = field(default="ifactory-pdm-runtime", init=False)
+    api_key_label: str = field(default="ifactory-pdm-runtime", init=False)
 
     @classmethod
     def load(cls, root: Path) -> BootstrapConfig:

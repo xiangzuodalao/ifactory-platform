@@ -947,6 +947,7 @@ class ActionDefinition:
     mutation_class: str
     allowed_operations: frozenset[Operation]
     target_policy: str
+    allows_multiple_targets: bool
 
 
 _TARGETED_ACTIONS = frozenset(
@@ -969,13 +970,68 @@ _TARGETED_ACTIONS = frozenset(
         ActionCode.REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP,
     }
 )
+_ALLOWED_OPERATIONS = MappingProxyType(
+    {
+        ActionCode.GATEWAY_FAIL_CLOSED: frozenset(
+            {
+                Operation.BOOTSTRAP,
+                Operation.START,
+                Operation.RESTART_API,
+                Operation.RESTART_FRONTEND,
+                Operation.STOP,
+                Operation.REPAIR,
+                Operation.SWITCH_LICENSE,
+            }
+        ),
+        ActionCode.PROCESS_STOP_FRONTEND: frozenset({Operation.RESTART_FRONTEND, Operation.STOP}),
+        ActionCode.PROCESS_STOP_API: frozenset({Operation.RESTART_API, Operation.STOP, Operation.SWITCH_LICENSE}),
+        ActionCode.LICENSE_STOP_GUARD: frozenset({Operation.RESTART_API, Operation.STOP, Operation.SWITCH_LICENSE}),
+        ActionCode.COMPOSE_STOP_STATE_GATEWAY: frozenset({Operation.STOP}),
+        ActionCode.RUNTIME_INSTALL_CONTROL: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.TOOLCHAIN_INSTALL: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.IMAGES_PULL_EXACT: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.COMPOSE_CREATE_STATE_GATEWAY: frozenset({Operation.BOOTSTRAP}),
+        ActionCode.COMPOSE_START_STATE_GATEWAY: frozenset({Operation.START, Operation.REPAIR}),
+        ActionCode.BUILD_API: frozenset({Operation.BOOTSTRAP, Operation.RESTART_API, Operation.REPAIR}),
+        ActionCode.FRONTEND_VERIFY: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.SYSTEMD_INSTALL_UNITS: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.LICENSE_SWITCH_MODE: frozenset({Operation.SWITCH_LICENSE}),
+        ActionCode.LICENSE_VERIFY_OFFLINE: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_API, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.LICENSE_DEBIT_ONLINE_START: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_API, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.LICENSE_RECOVER_UNKNOWN_BUDGET: frozenset({Operation.REPAIR}),
+        ActionCode.PROCESS_CREATE_API_PERMIT: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_API, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.PROCESS_START_API: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_API, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.CMMS_INITIALIZE_FRESH_DATABASE: frozenset({Operation.BOOTSTRAP}),
+        ActionCode.PROCESS_START_FRONTEND: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_FRONTEND, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.READINESS_REQUIRE_API_LOOPBACK: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.REPAIR_CAPTURE_BOOTSTRAP_DISCOVERY: frozenset({Operation.REPAIR}),
+        ActionCode.REPAIR_REVOKE_UNCAPTURED_API_KEY: frozenset({Operation.REPAIR}),
+        ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE: frozenset({Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_CREATE_ORGANIZATION: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_CREATE_ROLE: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_PROBE_INVITATION: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_CREATE_INVITATION: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_CREATE_RUNTIME_IDENTITY: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_CREATE_API_KEY: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_FINALIZE_ROLE: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.BOOTSTRAP_PUBLISH_PHASE2_KEY: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.REPAIR_STOP_LOOPBACK_RUNTIME: frozenset({Operation.REPAIR}),
+        ActionCode.READINESS_REQUIRE_LOOPBACK: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_API, Operation.RESTART_FRONTEND, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.GATEWAY_ENABLE_DUAL: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_API, Operation.RESTART_FRONTEND, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.READINESS_REQUIRE_DUAL: frozenset({Operation.BOOTSTRAP, Operation.START, Operation.RESTART_API, Operation.RESTART_FRONTEND, Operation.REPAIR, Operation.SWITCH_LICENSE}),
+        ActionCode.READINESS_PROBE_MINIO_ROUTE: frozenset({Operation.BOOTSTRAP, Operation.REPAIR}),
+        ActionCode.REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP: frozenset({Operation.REPAIR}),
+    }
+)
 _ACTION_DEFINITIONS = MappingProxyType(
     {
         code: ActionDefinition(
             handler=code.value.replace(".", "_"),
             mutation_class=code.value.split(".", 1)[0],
-            allowed_operations=frozenset(Operation),
+            allowed_operations=_ALLOWED_OPERATIONS[code],
             target_policy="required" if code in _TARGETED_ACTIONS else "forbidden",
+            allows_multiple_targets=False,
         )
         for code in ActionCode
     }
@@ -984,44 +1040,6 @@ _ACTION_DEFINITIONS = MappingProxyType(
 
 def _a(code: ActionCode) -> PlannedAction:
     return PlannedAction(code)
-
-
-def _t(code: ActionCode, kind: ActionTargetKind, target: str) -> PlannedAction:
-    return PlannedAction(code, kind, target)
-
-
-def _license_start(mode: LicenseMode) -> tuple[PlannedAction, ...]:
-    return (
-        _a(
-            ActionCode.LICENSE_VERIFY_OFFLINE
-            if mode is LicenseMode.OFFLINE
-            else ActionCode.LICENSE_DEBIT_ONLINE_START
-        ),
-        _a(ActionCode.PROCESS_CREATE_API_PERMIT),
-        _a(ActionCode.PROCESS_START_API),
-    )
-
-
-def _preopen() -> tuple[PlannedAction, ...]:
-    return (
-        _a(ActionCode.READINESS_REQUIRE_LOOPBACK),
-        _a(ActionCode.GATEWAY_ENABLE_DUAL),
-        _a(ActionCode.READINESS_REQUIRE_DUAL),
-    )
-
-
-def _completion(slot_id: str) -> tuple[PlannedAction, ...]:
-    return (
-        _t(ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN, ActionTargetKind.IDENTITY, "super-admin"),
-        _t(ActionCode.BOOTSTRAP_CREATE_ORGANIZATION, ActionTargetKind.IDENTITY, "organization-admin"),
-        _t(ActionCode.BOOTSTRAP_CREATE_ROLE, ActionTargetKind.ROLE_EXTERNAL_ID, "ifactory-pdm-runtime"),
-        _t(ActionCode.BOOTSTRAP_PROBE_INVITATION, ActionTargetKind.INVITATION_PROBE_SLOT, slot_id),
-        _t(ActionCode.BOOTSTRAP_CREATE_INVITATION, ActionTargetKind.IDENTITY, "runtime-user"),
-        _t(ActionCode.BOOTSTRAP_CREATE_RUNTIME_IDENTITY, ActionTargetKind.IDENTITY, "runtime-user"),
-        _t(ActionCode.BOOTSTRAP_CREATE_API_KEY, ActionTargetKind.API_KEY_LABEL, "ifactory-pdm-runtime"),
-        _t(ActionCode.BOOTSTRAP_FINALIZE_ROLE, ActionTargetKind.ROLE_EXTERNAL_ID, "ifactory-pdm-runtime"),
-        _t(ActionCode.BOOTSTRAP_PUBLISH_PHASE2_KEY, ActionTargetKind.PHASE2_ENV, "predictive-maintenance-shadow.env"),
-    )
 
 
 def _validate_targets(
@@ -1064,6 +1082,143 @@ def _validate_targets(
             raise _invalid_record()
 
 
+_I_BOOTSTRAP = frozenset(
+    {
+        ActionCode.RUNTIME_INSTALL_CONTROL,
+        ActionCode.TOOLCHAIN_INSTALL,
+        ActionCode.IMAGES_PULL_EXACT,
+        ActionCode.BUILD_API,
+        ActionCode.FRONTEND_VERIFY,
+        ActionCode.SYSTEMD_INSTALL_UNITS,
+    }
+)
+_I_REPAIR_API = frozenset(
+    {
+        ActionCode.RUNTIME_INSTALL_CONTROL,
+        ActionCode.TOOLCHAIN_INSTALL,
+        ActionCode.IMAGES_PULL_EXACT,
+        ActionCode.COMPOSE_START_STATE_GATEWAY,
+        ActionCode.BUILD_API,
+        ActionCode.SYSTEMD_INSTALL_UNITS,
+    }
+)
+_I_REPAIR_FULL = _I_REPAIR_API | {ActionCode.FRONTEND_VERIFY}
+_C_FULL_CODES = (
+    ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN,
+    ActionCode.BOOTSTRAP_CREATE_ORGANIZATION,
+    ActionCode.BOOTSTRAP_CREATE_ROLE,
+    ActionCode.BOOTSTRAP_PROBE_INVITATION,
+    ActionCode.BOOTSTRAP_CREATE_INVITATION,
+    ActionCode.BOOTSTRAP_CREATE_RUNTIME_IDENTITY,
+    ActionCode.BOOTSTRAP_CREATE_API_KEY,
+    ActionCode.BOOTSTRAP_FINALIZE_ROLE,
+    ActionCode.BOOTSTRAP_PUBLISH_PHASE2_KEY,
+)
+_C_PROBE_RESOLVED_CODES = tuple(
+    code for code in _C_FULL_CODES if code is not ActionCode.BOOTSTRAP_PROBE_INVITATION
+)
+_C_CODE_SET = frozenset(_C_FULL_CODES)
+
+
+def _matches_codes(
+    codes: frozenset[ActionCode],
+    required: set[ActionCode],
+    optional: frozenset[ActionCode] = frozenset(),
+) -> bool:
+    return required.issubset(codes) and codes.issubset(required | optional)
+
+
+def _legal_completion_suffix(codes: tuple[ActionCode, ...]) -> bool:
+    if not codes or codes[-1] is not ActionCode.BOOTSTRAP_PUBLISH_PHASE2_KEY:
+        return False
+    return any(
+        codes == language[start:]
+        for language in (_C_FULL_CODES, _C_PROBE_RESOLVED_CODES)
+        for start in range(len(language))
+    )
+
+
+def _validate_bootstrap_bindings(
+    bindings: BootstrapPlanBindings | None,
+    *,
+    branch: str,
+    rows: tuple[PlannedAction, ...],
+) -> None:
+    if branch == "stop":
+        if bindings is not None:
+            raise _invalid_record()
+        return
+    if bindings is None:
+        raise _invalid_record()
+    if (
+        bindings.role_external_id != "ifactory-pdm-runtime"
+        or bindings.api_key_label != "ifactory-pdm-runtime"
+        or bindings.phase2_env_logical_id != "predictive-maintenance-shadow.env"
+    ):
+        raise _invalid_record()
+    if branch == "repair-cleanup":
+        cleanup = bindings.api_key_cleanup
+        if (
+            bindings.credentials is not None
+            or bindings.invitation_probe is not None
+            or bindings.api_key_capture is not None
+            or cleanup is None
+        ):
+            raise _invalid_record()
+        if cleanup.observed_captured_file is not None and cleanup.observed_captured_file != cleanup.historical_captured_file:
+            raise _invalid_record()
+        if cleanup.terminal_outcome is ApiKeyCleanupOutcome.PUBLISHED:
+            if cleanup.phase2_env_file is None or bindings.phase2_env_file != cleanup.phase2_env_file:
+                raise _invalid_record()
+        elif cleanup.phase2_env_file is not None or bindings.phase2_env_file is not None:
+            raise _invalid_record()
+        return
+    if bindings.credentials is None or bindings.api_key_cleanup is not None:
+        raise _invalid_record()
+
+    codes = tuple(row.code for row in rows)
+    completion_codes = tuple(code for code in codes if code in _C_CODE_SET)
+    has_probe = ActionCode.BOOTSTRAP_PROBE_INVITATION in completion_codes
+    if branch == "bootstrap":
+        if (
+            bindings.invitation_probe is None
+            or bindings.api_key_capture is not None
+            or bindings.phase2_env_file is None
+            or any(row.candidate_file is None for row in bindings.credentials)
+        ):
+            raise _invalid_record()
+    elif completion_codes:
+        if (bindings.invitation_probe is not None) != has_probe:
+            raise _invalid_record()
+        create_key = ActionCode.BOOTSTRAP_CREATE_API_KEY in completion_codes
+        if (bindings.api_key_capture is not None) != (not create_key):
+            raise _invalid_record()
+    elif branch not in {"repair-discovery"} and bindings.invitation_probe is not None:
+        raise _invalid_record()
+    if not completion_codes and bindings.api_key_capture is not None:
+        raise _invalid_record()
+
+    candidates = {row.identity: row.candidate_file for row in bindings.credentials}
+    required_candidates: set[CredentialIdentity] = set()
+    if ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN in codes:
+        required_candidates.add(CredentialIdentity.SUPER_ADMIN)
+    if ActionCode.BOOTSTRAP_CREATE_ORGANIZATION in codes:
+        required_candidates.add(CredentialIdentity.ORGANIZATION_ADMIN)
+    if (
+        ActionCode.BOOTSTRAP_CREATE_INVITATION in codes
+        or ActionCode.BOOTSTRAP_CREATE_RUNTIME_IDENTITY in codes
+    ):
+        required_candidates.add(CredentialIdentity.RUNTIME_USER)
+    discard = next(
+        (row for row in rows if row.code is ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE),
+        None,
+    )
+    if discard is not None:
+        required_candidates.add(CredentialIdentity(discard.target_id))
+    if any(candidates[identity] is None for identity in required_candidates):
+        raise _invalid_record()
+
+
 class ActionRegistry:
     @staticmethod
     def definition(code: ActionCode) -> ActionDefinition:
@@ -1089,7 +1244,12 @@ class ActionRegistry:
         rows = tuple(actions)
         if not rows or any(type(row) is not PlannedAction for row in rows):
             raise _invalid_record()
-        if len(set(rows)) != len(rows):
+        counts = Counter(row.code for row in rows)
+        if any(
+            count > 1
+            and not _ACTION_DEFINITIONS[code].allows_multiple_targets
+            for code, count in counts.items()
+        ):
             raise _invalid_record()
         ordered = tuple(
             sorted(
@@ -1101,208 +1261,171 @@ class ActionRegistry:
                 ),
             )
         )
-        if rows != ordered:
+        if rows != ordered or rows[0] != _a(ActionCode.GATEWAY_FAIL_CLOSED):
+            raise _invalid_record()
+        if any(operation not in _ACTION_DEFINITIONS[row.code].allowed_operations for row in rows):
             raise _invalid_record()
         _validate_targets(rows, bootstrap_bindings)
 
-        fail = (_a(ActionCode.GATEWAY_FAIL_CLOSED),)
-        start = _license_start(license_mode)
-        preopen = _preopen()
-        compose_start = _t(
-            ActionCode.COMPOSE_START_STATE_GATEWAY,
-            ActionTargetKind.COMPOSE_RESOURCE_SET,
-            "compose:ifactory-cmms-dev",
-        )
-        compose_create = _t(
-            ActionCode.COMPOSE_CREATE_STATE_GATEWAY,
-            ActionTargetKind.COMPOSE_RESOURCE_SET,
-            "compose:ifactory-cmms-dev",
-        )
-        branches: list[tuple[PlannedAction, ...]] = []
-        if operation is Operation.START:
-            branches.extend(
-                (
-                    fail + preopen,
-                    fail
-                    + (compose_start,)
-                    + start
-                    + (_a(ActionCode.PROCESS_START_FRONTEND),)
-                    + preopen,
-                )
-            )
-        elif operation is Operation.RESTART_API:
-            branches.append(
-                fail
-                + (_a(ActionCode.PROCESS_STOP_API), _a(ActionCode.BUILD_API))
-                + start
-                + preopen
-            )
-        elif operation is Operation.RESTART_FRONTEND:
-            branches.append(
-                fail
-                + (
-                    _a(ActionCode.PROCESS_STOP_FRONTEND),
-                    _a(ActionCode.PROCESS_START_FRONTEND),
-                )
-                + preopen
-            )
-        elif operation is Operation.STOP:
-            branches.append(
-                fail
-                + (
-                    _a(ActionCode.PROCESS_STOP_FRONTEND),
-                    _a(ActionCode.PROCESS_STOP_API),
-                    _t(
-                        ActionCode.COMPOSE_STOP_STATE_GATEWAY,
-                        ActionTargetKind.COMPOSE_RESOURCE_SET,
-                        "compose:ifactory-cmms-dev",
-                    ),
-                )
-            )
-        elif operation is Operation.SWITCH_LICENSE:
-            branches.append(
-                fail
-                + (
-                    _a(ActionCode.PROCESS_STOP_API),
-                    _a(ActionCode.LICENSE_SWITCH_MODE),
-                )
-                + start
-                + preopen
-            )
-        elif operation is Operation.BOOTSTRAP:
-            slot = (
-                bootstrap_bindings.invitation_probe.slot_id
-                if bootstrap_bindings and bootstrap_bindings.invitation_probe
-                else ""
-            )
-            branches.append(
-                fail
-                + (compose_create,)
-                + start
-                + (
-                    _a(ActionCode.CMMS_INITIALIZE_FRESH_DATABASE),
-                    _a(ActionCode.PROCESS_START_FRONTEND),
-                    _a(ActionCode.READINESS_REQUIRE_API_LOOPBACK),
-                )
-                + _completion(slot)
-                + preopen
-            )
-        elif operation is Operation.REPAIR:
-            base = fail + start
-            api_ready = (_a(ActionCode.READINESS_REQUIRE_API_LOOPBACK),)
-            frontend_ready = (
-                _a(ActionCode.PROCESS_START_FRONTEND),
-                _a(ActionCode.READINESS_REQUIRE_API_LOOPBACK),
-            )
-            stop_runtime = _a(ActionCode.REPAIR_STOP_LOOPBACK_RUNTIME)
-            branches.extend(
-                (
-                    base
-                    + api_ready
-                    + (
-                        _t(
-                            ActionCode.REPAIR_CAPTURE_BOOTSTRAP_DISCOVERY,
-                            ActionTargetKind.RECEIPT,
-                            "receipt:cmms-bootstrap",
-                        ),
-                        stop_runtime,
-                    ),
-                    base + frontend_ready + preopen,
-                    fail
-                    + (
-                        _a(ActionCode.LICENSE_RECOVER_UNKNOWN_BUDGET),
-                        _a(ActionCode.PROCESS_CREATE_API_PERMIT),
-                        _a(ActionCode.PROCESS_START_API),
-                        _a(ActionCode.PROCESS_START_FRONTEND),
-                    )
-                    + preopen,
-                    fail
-                    + (
-                        _t(
-                            ActionCode.REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP,
-                            ActionTargetKind.RECEIPT,
-                            "receipt:cmms-bootstrap",
-                        ),
-                    ),
-                )
-            )
-            slot = (
-                bootstrap_bindings.invitation_probe.slot_id
-                if bootstrap_bindings and bootstrap_bindings.invitation_probe
-                else ""
-            )
-            completion = _completion(slot)
-            branches.append(base + frontend_ready + completion + preopen)
-            if bootstrap_bindings and bootstrap_bindings.api_key_capture:
-                branches.append(base + frontend_ready + completion[-1:] + preopen)
-            for row in rows:
-                if row.code in {
-                    ActionCode.REPAIR_REVOKE_UNCAPTURED_API_KEY,
-                    ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE,
-                }:
-                    branches.append(base + api_ready + (row, stop_runtime))
-
-        if profile is RuntimeProfile.ACCEPTANCE:
-            branches.extend(
-                branch + (_a(ActionCode.READINESS_PROBE_MINIO_ROUTE),)
-                for branch in tuple(branches)
-                if branch[-1].code is ActionCode.READINESS_REQUIRE_DUAL
-            )
-        if rows not in branches:
+        codes = frozenset(row.code for row in rows)
+        has_minio = ActionCode.READINESS_PROBE_MINIO_ROUTE in codes
+        if has_minio and profile is not RuntimeProfile.ACCEPTANCE:
             raise _invalid_record()
-
-        cleanup_only = rows[-1].code is ActionCode.REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP
-        if operation is Operation.STOP:
-            if bootstrap_bindings is not None:
+        structural = codes - {ActionCode.READINESS_PROBE_MINIO_ROUTE}
+        fail = {ActionCode.GATEWAY_FAIL_CLOSED}
+        preopen = {
+            ActionCode.READINESS_REQUIRE_LOOPBACK,
+            ActionCode.GATEWAY_ENABLE_DUAL,
+            ActionCode.READINESS_REQUIRE_DUAL,
+        }
+        ordinary_start = {
+            ActionCode.LICENSE_VERIFY_OFFLINE
+            if license_mode is LicenseMode.OFFLINE
+            else ActionCode.LICENSE_DEBIT_ONLINE_START,
+            ActionCode.PROCESS_CREATE_API_PERMIT,
+            ActionCode.PROCESS_START_API,
+        }
+        branch = ""
+        if operation is Operation.BOOTSTRAP:
+            required = fail | ordinary_start | preopen | _C_CODE_SET | {
+                ActionCode.COMPOSE_CREATE_STATE_GATEWAY,
+                ActionCode.CMMS_INITIALIZE_FRESH_DATABASE,
+                ActionCode.PROCESS_START_FRONTEND,
+                ActionCode.READINESS_REQUIRE_API_LOOPBACK,
+            }
+            if not _matches_codes(structural, required, _I_BOOTSTRAP):
                 raise _invalid_record()
-            return
-        if bootstrap_bindings is None:
-            raise _invalid_record()
-        if (
-            bootstrap_bindings.role_external_id != "ifactory-pdm-runtime"
-            or bootstrap_bindings.api_key_label != "ifactory-pdm-runtime"
-            or bootstrap_bindings.phase2_env_logical_id
-            != "predictive-maintenance-shadow.env"
-        ):
-            raise _invalid_record()
-        if cleanup_only:
-            cleanup = bootstrap_bindings.api_key_cleanup
-            if (
-                bootstrap_bindings.credentials is not None
-                or bootstrap_bindings.invitation_probe is not None
-                or bootstrap_bindings.api_key_capture is not None
-                or cleanup is None
-            ):
-                raise _invalid_record()
-            if cleanup.observed_captured_file is not None and cleanup.observed_captured_file != cleanup.historical_captured_file:
-                raise _invalid_record()
-            if cleanup.terminal_outcome is ApiKeyCleanupOutcome.PUBLISHED:
-                if cleanup.phase2_env_file is None or bootstrap_bindings.phase2_env_file != cleanup.phase2_env_file:
+            branch = "bootstrap"
+        elif operation is Operation.START:
+            if ActionCode.COMPOSE_START_STATE_GATEWAY in structural:
+                required = fail | ordinary_start | preopen | {
+                    ActionCode.COMPOSE_START_STATE_GATEWAY,
+                    ActionCode.PROCESS_START_FRONTEND,
+                }
+                if not _matches_codes(structural, required):
                     raise _invalid_record()
-            elif cleanup.phase2_env_file is not None or bootstrap_bindings.phase2_env_file is not None:
+                branch = "start-stopped"
+            else:
+                if not _matches_codes(
+                    structural,
+                    fail | preopen,
+                    frozenset({ActionCode.PROCESS_START_FRONTEND}),
+                ):
+                    raise _invalid_record()
+                branch = "start-active"
+            if has_minio:
                 raise _invalid_record()
-            return
-        if bootstrap_bindings.api_key_cleanup is not None:
-            raise _invalid_record()
-        if bootstrap_bindings.credentials is None:
-            raise _invalid_record()
-        has_completion = any(
-            row.code is ActionCode.BOOTSTRAP_ROTATE_SUPER_ADMIN for row in rows
-        )
-        if operation is Operation.BOOTSTRAP or has_completion:
-            if (
-                bootstrap_bindings.invitation_probe is None
-                or any(
-                    row.candidate_file is None
-                    for row in bootstrap_bindings.credentials
-                )
+        elif operation is Operation.RESTART_API:
+            required = fail | ordinary_start | preopen | {
+                ActionCode.PROCESS_STOP_API,
+                ActionCode.BUILD_API,
+            }
+            if has_minio or not _matches_codes(
+                structural,
+                required,
+                frozenset({ActionCode.LICENSE_STOP_GUARD}),
             ):
                 raise _invalid_record()
-        publish_without_create = any(
-            row.code is ActionCode.BOOTSTRAP_PUBLISH_PHASE2_KEY for row in rows
-        ) and not any(row.code is ActionCode.BOOTSTRAP_CREATE_API_KEY for row in rows)
-        if publish_without_create and bootstrap_bindings.api_key_capture is None:
+            branch = "restart-api"
+        elif operation is Operation.RESTART_FRONTEND:
+            required = fail | preopen | {
+                ActionCode.PROCESS_STOP_FRONTEND,
+                ActionCode.PROCESS_START_FRONTEND,
+            }
+            if has_minio or structural != required:
+                raise _invalid_record()
+            branch = "restart-frontend"
+        elif operation is Operation.STOP:
+            required = fail | {
+                ActionCode.PROCESS_STOP_FRONTEND,
+                ActionCode.PROCESS_STOP_API,
+                ActionCode.COMPOSE_STOP_STATE_GATEWAY,
+            }
+            if has_minio or not _matches_codes(
+                structural,
+                required,
+                frozenset({ActionCode.LICENSE_STOP_GUARD}),
+            ):
+                raise _invalid_record()
+            branch = "stop"
+        elif operation is Operation.SWITCH_LICENSE:
+            required = fail | ordinary_start | preopen | {
+                ActionCode.PROCESS_STOP_API,
+                ActionCode.LICENSE_SWITCH_MODE,
+            }
+            if has_minio or not _matches_codes(
+                structural,
+                required,
+                frozenset(
+                    {ActionCode.LICENSE_STOP_GUARD, ActionCode.PROCESS_START_FRONTEND}
+                ),
+            ):
+                raise _invalid_record()
+            branch = "switch-license"
+        elif operation is Operation.REPAIR:
+            cleanup = ActionCode.REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP in structural
+            recovery = ActionCode.LICENSE_RECOVER_UNKNOWN_BUDGET in structural
+            discovery = ActionCode.REPAIR_CAPTURE_BOOTSTRAP_DISCOVERY in structural
+            revoke = ActionCode.REPAIR_REVOKE_UNCAPTURED_API_KEY in structural
+            discard = ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE in structural
+            sentinels = sum((cleanup, recovery, discovery, revoke, discard))
+            if sentinels > 1:
+                raise _invalid_record()
+            if cleanup:
+                if has_minio or structural != fail | {ActionCode.REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP}:
+                    raise _invalid_record()
+                branch = "repair-cleanup"
+            elif recovery:
+                required = fail | preopen | {
+                    ActionCode.LICENSE_RECOVER_UNKNOWN_BUDGET,
+                    ActionCode.PROCESS_CREATE_API_PERMIT,
+                    ActionCode.PROCESS_START_API,
+                    ActionCode.PROCESS_START_FRONTEND,
+                }
+                if license_mode is not LicenseMode.ONLINE or has_minio or not _matches_codes(structural, required, _I_REPAIR_FULL):
+                    raise _invalid_record()
+                branch = "repair-budget"
+            elif discovery or revoke or discard:
+                sentinel = (
+                    ActionCode.REPAIR_CAPTURE_BOOTSTRAP_DISCOVERY
+                    if discovery
+                    else ActionCode.REPAIR_REVOKE_UNCAPTURED_API_KEY
+                    if revoke
+                    else ActionCode.REPAIR_DISCARD_REJECTED_CANDIDATE
+                )
+                required = fail | ordinary_start | {
+                    ActionCode.READINESS_REQUIRE_API_LOOPBACK,
+                    sentinel,
+                    ActionCode.REPAIR_STOP_LOOPBACK_RUNTIME,
+                }
+                if has_minio or not _matches_codes(structural, required, _I_REPAIR_API):
+                    raise _invalid_record()
+                branch = (
+                    "repair-discovery" if discovery else "repair-revoke" if revoke else "repair-discard"
+                )
+            else:
+                common = fail | ordinary_start | preopen | {
+                    ActionCode.PROCESS_START_FRONTEND,
+                    ActionCode.READINESS_REQUIRE_API_LOOPBACK,
+                }
+                completion = tuple(row.code for row in rows if row.code in _C_CODE_SET)
+                if completion:
+                    if not _legal_completion_suffix(completion) or not _matches_codes(structural, common | set(completion), _I_REPAIR_FULL):
+                        raise _invalid_record()
+                    branch = "repair-completion"
+                else:
+                    if not _matches_codes(structural, common, _I_REPAIR_FULL):
+                        raise _invalid_record()
+                    branch = "repair-readiness"
+                if has_minio and profile is not RuntimeProfile.ACCEPTANCE:
+                    raise _invalid_record()
+        if not branch:
             raise _invalid_record()
+        _validate_bootstrap_bindings(
+            bootstrap_bindings,
+            branch=branch,
+            rows=rows,
+        )
 
 
 @dataclass(frozen=True)
@@ -1358,9 +1481,9 @@ class DeploymentPlan:
         bootstrap_bindings: BootstrapPlanBindings | None,
         actions: Sequence[PlannedAction],
         now: datetime,
-        plan_nonce: str | None = None,
+        plan_nonce: str,
     ) -> DeploymentPlan:
-        nonce = secrets.token_hex(16) if plan_nonce is None else _require_hex32(plan_nonce)
+        nonce = _require_hex32(plan_nonce)
         created = _parse_utc(_format_utc(now))
         expires = created + timedelta(minutes=30)
         values = {
@@ -1559,9 +1682,9 @@ class PlanApplicationRecord:
         self,
         state: PlanApplicationState,
         now: datetime,
-        secondary_codes: Sequence[ApplicationResultCode] = (),
+        secondary_result_codes: Sequence[ApplicationResultCode] = (),
     ) -> PlanApplicationRecord:
-        if secondary_codes or type(state) is not PlanApplicationState:
+        if secondary_result_codes or type(state) is not PlanApplicationState:
             raise _invalid_record()
         timestamp = _parse_utc(_format_utc(now))
         if self.state is PlanApplicationState.ATTEMPTED and state in {
@@ -1722,34 +1845,112 @@ def reserve_plan_attempt(
 
 
 class DeploymentWriteLease:
-    __slots__ = ("_fd", "_reservation", "_path", "_closed", "_token")
+    __slots__ = (
+        "_fd",
+        "_directory_fd",
+        "_reservation",
+        "_path",
+        "_creator_pid",
+        "_lock_identity",
+        "_directory_identity",
+        "_closed",
+        "_token",
+    )
 
-    def __init__(self, token: object, fd: int, reservation: PlanAttemptReservation, path: Path) -> None:
+    def __init__(
+        self,
+        token: object,
+        fd: int,
+        directory_fd: int,
+        reservation: PlanAttemptReservation,
+        path: Path,
+        lock_identity: tuple[int, int],
+        directory_identity: tuple[int, int],
+    ) -> None:
         if token is not _CAPABILITY_TOKEN:
             raise _invalid_record()
         self._token = token
         self._fd = fd
+        self._directory_fd = directory_fd
         self._reservation = reservation
         self._path = path
+        self._creator_pid = os.getpid()
+        self._lock_identity = lock_identity
+        self._directory_identity = directory_identity
         self._closed = False
 
     def _require_live(self, reservation: PlanAttemptReservation | None = None) -> None:
-        if self._closed or self._fd < 0:
+        if (
+            self._closed
+            or self._fd < 0
+            or self._directory_fd < 0
+            or os.getpid() != self._creator_pid
+        ):
             raise _confirmation_failed()
         if reservation is not None and self._reservation is not reservation:
             raise _confirmation_failed()
+        fresh_parent_fd = -1
+        fresh_lock_fd = -1
         try:
-            metadata = os.fstat(self._fd)
+            directory_metadata = os.fstat(self._directory_fd)
+            lock_metadata = os.fstat(self._fd)
+            if (
+                (directory_metadata.st_dev, directory_metadata.st_ino)
+                != self._directory_identity
+                or not stat.S_ISDIR(directory_metadata.st_mode)
+                or directory_metadata.st_uid != os.getuid()
+                or stat.S_IMODE(directory_metadata.st_mode) != 0o700
+                or (lock_metadata.st_dev, lock_metadata.st_ino)
+                != self._lock_identity
+            ):
+                raise _confirmation_failed()
+            require_private_regular_file(lock_metadata, expected_uid=os.getuid())
+            if lock_metadata.st_size != 0:
+                raise _confirmation_failed()
+
+            policy = RuntimePathPolicy.for_test(
+                self._path.parent,
+                allowed_files={self._path},
+            )
+            fresh_parent_fd, name = open_verified_parent(self._path, policy=policy)
+            fresh_directory_metadata = os.fstat(fresh_parent_fd)
+            if (
+                fresh_directory_metadata.st_dev,
+                fresh_directory_metadata.st_ino,
+            ) != self._directory_identity:
+                raise _confirmation_failed()
+            fresh_lock_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=fresh_parent_fd,
+            )
+            fresh_lock_metadata = os.fstat(fresh_lock_fd)
+            require_private_regular_file(
+                fresh_lock_metadata,
+                expected_uid=os.getuid(),
+            )
+            if (
+                (fresh_lock_metadata.st_dev, fresh_lock_metadata.st_ino)
+                != self._lock_identity
+                or fresh_lock_metadata.st_size != 0
+            ):
+                raise _confirmation_failed()
+        except DeploymentError:
+            raise _confirmation_failed() from None
         except OSError:
             raise _confirmation_failed() from None
-        require_private_regular_file(metadata, expected_uid=os.getuid())
-        if metadata.st_size != 0:
-            raise _confirmation_failed()
+        finally:
+            if fresh_lock_fd >= 0:
+                os.close(fresh_lock_fd)
+            if fresh_parent_fd >= 0:
+                os.close(fresh_parent_fd)
 
     def close(self) -> None:
         if not self._closed:
             os.close(self._fd)
+            os.close(self._directory_fd)
             self._fd = -1
+            self._directory_fd = -1
             self._closed = True
 
     def __enter__(self) -> DeploymentWriteLease:
@@ -1780,7 +1981,10 @@ def acquire_deployment_write_lease(
 ) -> DeploymentWriteLease:
     if type(reservation) is not PlanAttemptReservation or reservation._token is not _CAPABILITY_TOKEN:
         raise _confirmation_failed()
-    path = Path(os.path.abspath(lock_path))
+    raw_path = os.fspath(lock_path)
+    path = Path(os.path.abspath(raw_path))
+    if raw_path != os.fspath(path):
+        raise _confirmation_failed()
     plans_dir = reservation.application_path.parent
     if path.parent != plans_dir.parent.parent or path.name != "cmms-development-apply.lock":
         raise _confirmation_failed()
@@ -1789,6 +1993,24 @@ def acquire_deployment_write_lease(
     fd = -1
     try:
         parent_fd, name = open_verified_parent(path, policy=policy)
+        directory_metadata = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(directory_metadata.st_mode)
+            or directory_metadata.st_uid != os.getuid()
+            or stat.S_IMODE(directory_metadata.st_mode) != 0o700
+        ):
+            raise _confirmation_failed()
+        try:
+            fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            updated = _transition_application(
+                reservation.application_path,
+                reservation.application,
+                PlanApplicationState.CONTENDED,
+                _after_application_time(reservation.application),
+            )
+            reservation._replace_application(updated)
+            raise _deployment_busy() from None
         created = False
         try:
             fd = os.open(
@@ -1825,8 +2047,17 @@ def acquire_deployment_write_lease(
             )
             reservation._replace_application(updated)
             raise _deployment_busy() from None
-        lease = DeploymentWriteLease(_CAPABILITY_TOKEN, fd, reservation, path)
+        lease = DeploymentWriteLease(
+            _CAPABILITY_TOKEN,
+            fd,
+            parent_fd,
+            reservation,
+            path,
+            (metadata.st_dev, metadata.st_ino),
+            (directory_metadata.st_dev, directory_metadata.st_ino),
+        )
         fd = -1
+        parent_fd = -1
         return lease
     finally:
         if fd >= 0:
@@ -2155,16 +2386,170 @@ def _canonical_date(value: object) -> str:
     return text
 
 
-@dataclass(frozen=True)
+_STATE_RECORD_TOKEN = object()
+
+
+@dataclass(frozen=True, init=False)
 class StateRecord:
     _values: Mapping[str, JsonValue] = field(repr=False)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "_values", MappingProxyType(dict(self._values)))
+    def __init__(
+        self,
+        value: Mapping[str, JsonValue],
+        *,
+        _token: object | None = None,
+    ) -> None:
+        if _token is _STATE_RECORD_TOKEN:
+            parsed = dict(value)
+        else:
+            parsed = StateRecord.from_mapping(value).to_mapping()
+        object.__setattr__(self, "_values", MappingProxyType(parsed))
+
+    def _string(self, name: str) -> str:
+        return _require_string(self._values[name])
+
+    def _optional_string(self, name: str) -> str | None:
+        value = self._values[name]
+        return None if value is None else _require_string(value)
+
+    def _integer(self, name: str) -> int:
+        return _require_int(self._values[name])
+
+    def _optional_integer(self, name: str) -> int | None:
+        value = self._values[name]
+        return None if value is None else _require_int(value, minimum=1)
+
+    @property
+    def schema_version(self) -> int:
+        return self._integer("schema_version")
+
+    @property
+    def record_type(self) -> str:
+        return self._string("record_type")
 
     @property
     def generation(self) -> int:
         return self._values["generation"]  # type: ignore[return-value]
+
+    @property
+    def root_sha(self) -> str:
+        return self._string("root_sha")
+
+    @property
+    def root_dirty_fingerprint(self) -> str:
+        return self._string("root_dirty_fingerprint")
+
+    @property
+    def root_status(self) -> SourceStatus:
+        return SourceStatus(self._string("root_status"))
+
+    @property
+    def cmms_gitlink(self) -> str:
+        return self._string("cmms_gitlink")
+
+    @property
+    def cmms_head(self) -> str:
+        return self._string("cmms_head")
+
+    @property
+    def cmms_dirty_fingerprint(self) -> str:
+        return self._string("cmms_dirty_fingerprint")
+
+    @property
+    def cmms_status(self) -> SourceStatus:
+        return SourceStatus(self._string("cmms_status"))
+
+    @property
+    def config_sha256(self) -> str:
+        return self._string("config_sha256")
+
+    @property
+    def toolchain_manifest_sha256(self) -> str:
+        return self._string("toolchain_manifest_sha256")
+
+    @property
+    def sensitive_manifest_sha256(self) -> str:
+        return self._string("sensitive_manifest_sha256")
+
+    @property
+    def api_artifact_sha256(self) -> str:
+        return self._string("api_artifact_sha256")
+
+    @property
+    def frontend_lock_sha256(self) -> str:
+        return self._string("frontend_lock_sha256")
+
+    @property
+    def controller_entrypoint_sha256(self) -> str:
+        return self._string("controller_entrypoint_sha256")
+
+    @property
+    def controller_package_sha256(self) -> str:
+        return self._string("controller_package_sha256")
+
+    @property
+    def unit_generation(self) -> str:
+        return self._string("unit_generation")
+
+    @property
+    def compose_project(self) -> str:
+        return self._string("compose_project")
+
+    @property
+    def postgres_volume_name(self) -> str:
+        return self._string("postgres_volume_name")
+
+    @property
+    def postgres_volume_identity(self) -> str:
+        return self._string("postgres_volume_identity")
+
+    @property
+    def minio_volume_name(self) -> str:
+        return self._string("minio_volume_name")
+
+    @property
+    def minio_volume_identity(self) -> str:
+        return self._string("minio_volume_identity")
+
+    @property
+    def api_main_pid(self) -> int | None:
+        return self._optional_integer("api_main_pid")
+
+    @property
+    def api_process_start_ticks(self) -> int | None:
+        return self._optional_integer("api_process_start_ticks")
+
+    @property
+    def frontend_main_pid(self) -> int | None:
+        return self._optional_integer("frontend_main_pid")
+
+    @property
+    def frontend_process_start_ticks(self) -> int | None:
+        return self._optional_integer("frontend_process_start_ticks")
+
+    @property
+    def docker_gateway_ipv4(self) -> str | None:
+        return self._optional_string("docker_gateway_ipv4")
+
+    @property
+    def loopback_gateway_sha256(self) -> str | None:
+        return self._optional_string("loopback_gateway_sha256")
+
+    @property
+    def gateway_generation(self) -> str | None:
+        return self._optional_string("gateway_generation")
+
+    @property
+    def gateway_mode(self) -> GatewayMode:
+        return GatewayMode(self._string("gateway_mode"))
+
+    @property
+    def license_mode(self) -> LicenseMode:
+        return LicenseMode(self._string("license_mode"))
+
+    @property
+    def license_guard_generation(self) -> str | None:
+        return self._optional_string("license_guard_generation")
 
     @property
     def updated_at(self) -> datetime:
@@ -2173,6 +2558,38 @@ class StateRecord:
     @property
     def online_budget_ledger_sha256(self) -> str | None:
         return self._values["online_budget_ledger_sha256"]  # type: ignore[return-value]
+
+    @property
+    def latest_budget_debit_id(self) -> str | None:
+        return self._optional_string("latest_budget_debit_id")
+
+    @property
+    def latest_budget_sequence(self) -> int | None:
+        return self._optional_integer("latest_budget_sequence")
+
+    @property
+    def latest_budget_local_date(self) -> str | None:
+        return self._optional_string("latest_budget_local_date")
+
+    @property
+    def bootstrap_receipt_sha256(self) -> str | None:
+        return self._optional_string("bootstrap_receipt_sha256")
+
+    @property
+    def bootstrap_state(self) -> BootstrapState:
+        return BootstrapState(self._string("bootstrap_state"))
+
+    @property
+    def last_plan_sha256(self) -> str:
+        return self._string("last_plan_sha256")
+
+    @property
+    def last_operation(self) -> Operation:
+        return Operation(self._string("last_operation"))
+
+    @property
+    def last_transition_code(self) -> str:
+        return self._string("last_transition_code")
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return dict(self._values)
@@ -2246,7 +2663,7 @@ class StateRecord:
         if parsed["bootstrap_receipt_sha256"] is None and BootstrapState(parsed["bootstrap_state"]) is not BootstrapState.UNINITIALIZED:
             raise _invalid_record()
         _validate_json(parsed, max_depth=8)
-        return cls(parsed)
+        return cls(parsed, _token=_STATE_RECORD_TOKEN)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> StateRecord:

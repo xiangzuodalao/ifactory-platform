@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import pickle
 import shutil
 import stat
+from unittest.mock import patch
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -211,6 +213,13 @@ def test_runtime_and_bootstrap_config_load_exact_frozen_surfaces(tmp_path: Path)
     assert bootstrap.organization_admin_email == runtime.allowed_organization_admin
     assert bootstrap.runtime_user_email == "runtime@example.test"
     assert bootstrap.role_external_id == "ifactory-pdm-runtime"
+
+    with pytest.raises(ValueError):
+        replace(runtime, compose_project="overridden")
+    with pytest.raises(ValueError):
+        replace(bootstrap, super_admin_email="overridden@example.test")
+    with pytest.raises(ValueError):
+        replace(bootstrap, role_external_id="overridden")
 
 
 @pytest.mark.parametrize(
@@ -778,6 +787,22 @@ def _bindings_for_branch(
         return None
     if branch == "bootstrap" or branch == "repair-completion":
         return _fresh_bootstrap_bindings(safe_runtime)
+    if branch == "repair-discard":
+        credentials = tuple(
+            replace(
+                row,
+                candidate_file=(
+                    safe_runtime.stat_binding("credential:runtime-user:candidate", 799)
+                    if row.identity is CredentialIdentity.RUNTIME_USER
+                    else row.candidate_file
+                ),
+            )
+            for row in safe_runtime.bootstrap_plan_bindings.credentials or ()
+        )
+        return replace(
+            safe_runtime.bootstrap_plan_bindings,
+            credentials=credentials,
+        )
     if branch == "repair-cleanup":
         return _cleanup_bindings(safe_runtime, ApiKeyCleanupOutcome.PUBLISHED)
     return safe_runtime.bootstrap_plan_bindings
@@ -789,6 +814,164 @@ def test_registry_rank_contains_each_action_exactly_once() -> None:
     assert len(set(ACTION_RANK)) == len(ACTION_RANK)
     assert ACTION_RANK[0] is ActionCode.GATEWAY_FAIL_CLOSED
     assert ACTION_RANK[-1] is ActionCode.REPAIR_FINALIZE_API_KEY_CAPTURE_CLEANUP
+
+
+FROZEN_ACTION_RANK_VALUES = (
+    "gateway.fail-closed",
+    "process.stop-frontend",
+    "process.stop-api",
+    "license.stop-guard",
+    "compose.stop-state-gateway",
+    "runtime.install-control",
+    "toolchain.install",
+    "images.pull-exact",
+    "compose.create-state-gateway",
+    "compose.start-state-gateway",
+    "build.api",
+    "frontend.verify",
+    "systemd.install-units",
+    "license.switch-mode",
+    "license.verify-offline",
+    "license.debit-online-start",
+    "license.recover-unknown-budget",
+    "process.create-api-permit",
+    "process.start-api",
+    "cmms.initialize-fresh-database",
+    "process.start-frontend",
+    "readiness.require-api-loopback",
+    "repair.capture-bootstrap-discovery",
+    "repair.revoke-uncaptured-api-key",
+    "repair.discard-rejected-candidate",
+    "bootstrap.rotate-super-admin",
+    "bootstrap.create-organization",
+    "bootstrap.create-role",
+    "bootstrap.probe-invitation-enforcement",
+    "bootstrap.create-invitation",
+    "bootstrap.create-runtime-identity",
+    "bootstrap.create-api-key",
+    "bootstrap.finalize-role",
+    "bootstrap.publish-phase2-api-key",
+    "repair.stop-loopback-runtime",
+    "readiness.require-loopback",
+    "gateway.enable-dual",
+    "readiness.require-dual",
+    "readiness.probe-minio-route",
+    "repair.finalize-api-key-capture-cleanup",
+)
+
+FROZEN_ALLOWED_OPERATIONS = {
+    "gateway.fail-closed": {"bootstrap", "start", "restart-api", "restart-frontend", "stop", "repair", "switch-license"},
+    "process.stop-frontend": {"restart-frontend", "stop"},
+    "process.stop-api": {"restart-api", "stop", "switch-license"},
+    "license.stop-guard": {"restart-api", "stop", "switch-license"},
+    "compose.stop-state-gateway": {"stop"},
+    "runtime.install-control": {"bootstrap", "repair"},
+    "toolchain.install": {"bootstrap", "repair"},
+    "images.pull-exact": {"bootstrap", "repair"},
+    "compose.create-state-gateway": {"bootstrap"},
+    "compose.start-state-gateway": {"start", "repair"},
+    "build.api": {"bootstrap", "restart-api", "repair"},
+    "frontend.verify": {"bootstrap", "repair"},
+    "systemd.install-units": {"bootstrap", "repair"},
+    "license.switch-mode": {"switch-license"},
+    "license.verify-offline": {"bootstrap", "start", "restart-api", "repair", "switch-license"},
+    "license.debit-online-start": {"bootstrap", "start", "restart-api", "repair", "switch-license"},
+    "license.recover-unknown-budget": {"repair"},
+    "process.create-api-permit": {"bootstrap", "start", "restart-api", "repair", "switch-license"},
+    "process.start-api": {"bootstrap", "start", "restart-api", "repair", "switch-license"},
+    "cmms.initialize-fresh-database": {"bootstrap"},
+    "process.start-frontend": {"bootstrap", "start", "restart-frontend", "repair", "switch-license"},
+    "readiness.require-api-loopback": {"bootstrap", "repair"},
+    "repair.capture-bootstrap-discovery": {"repair"},
+    "repair.revoke-uncaptured-api-key": {"repair"},
+    "repair.discard-rejected-candidate": {"repair"},
+    "bootstrap.rotate-super-admin": {"bootstrap", "repair"},
+    "bootstrap.create-organization": {"bootstrap", "repair"},
+    "bootstrap.create-role": {"bootstrap", "repair"},
+    "bootstrap.probe-invitation-enforcement": {"bootstrap", "repair"},
+    "bootstrap.create-invitation": {"bootstrap", "repair"},
+    "bootstrap.create-runtime-identity": {"bootstrap", "repair"},
+    "bootstrap.create-api-key": {"bootstrap", "repair"},
+    "bootstrap.finalize-role": {"bootstrap", "repair"},
+    "bootstrap.publish-phase2-api-key": {"bootstrap", "repair"},
+    "repair.stop-loopback-runtime": {"repair"},
+    "readiness.require-loopback": {"bootstrap", "start", "restart-api", "restart-frontend", "repair", "switch-license"},
+    "gateway.enable-dual": {"bootstrap", "start", "restart-api", "restart-frontend", "repair", "switch-license"},
+    "readiness.require-dual": {"bootstrap", "start", "restart-api", "restart-frontend", "repair", "switch-license"},
+    "readiness.probe-minio-route": {"bootstrap", "repair"},
+    "repair.finalize-api-key-capture-cleanup": {"repair"},
+}
+
+FROZEN_REQUIRED_TARGET_ACTIONS = {
+    "compose.create-state-gateway",
+    "compose.start-state-gateway",
+    "compose.stop-state-gateway",
+    "repair.capture-bootstrap-discovery",
+    "repair.revoke-uncaptured-api-key",
+    "repair.discard-rejected-candidate",
+    "bootstrap.rotate-super-admin",
+    "bootstrap.create-organization",
+    "bootstrap.create-role",
+    "bootstrap.probe-invitation-enforcement",
+    "bootstrap.create-invitation",
+    "bootstrap.create-runtime-identity",
+    "bootstrap.create-api-key",
+    "bootstrap.finalize-role",
+    "bootstrap.publish-phase2-api-key",
+    "repair.finalize-api-key-capture-cleanup",
+}
+
+
+def test_registry_rank_and_operation_policies_match_frozen_literal_contract() -> None:
+    assert tuple(code.value for code in ACTION_RANK) == FROZEN_ACTION_RANK_VALUES
+    assert {
+        code.value: {operation.value for operation in ActionRegistry.definition(code).allowed_operations}
+        for code in ActionCode
+    } == FROZEN_ALLOWED_OPERATIONS
+    assert {
+        code.value: ActionRegistry.definition(code).allows_multiple_targets
+        for code in ActionCode
+    } == {value: False for value in FROZEN_ACTION_RANK_VALUES}
+    assert {
+        code.value: ActionRegistry.definition(code).target_policy
+        for code in ActionCode
+    } == {
+        value: "required" if value in FROZEN_REQUIRED_TARGET_ACTIONS else "forbidden"
+        for value in FROZEN_ACTION_RANK_VALUES
+    }
+
+
+def test_registry_single_target_metadata_rejects_both_secondary_ascii_orders(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    base = _legal_branch("repair-revoke", LicenseMode.OFFLINE)
+    target_index = next(
+        index
+        for index, row in enumerate(base)
+        if row.code is ActionCode.REPAIR_REVOKE_UNCAPTURED_API_KEY
+    )
+    repeated = (
+        _action(
+            ActionCode.REPAIR_REVOKE_UNCAPTURED_API_KEY,
+            ActionTargetKind.API_KEY_ID,
+            "41",
+        ),
+        _action(
+            ActionCode.REPAIR_REVOKE_UNCAPTURED_API_KEY,
+            ActionTargetKind.API_KEY_ID,
+            "42",
+        ),
+    )
+    for targets in (repeated, tuple(reversed(repeated))):
+        actions = base[:target_index] + targets + base[target_index + 1 :]
+        with pytest.raises(DeploymentError):
+            ActionRegistry.validate(
+                Operation.REPAIR,
+                RuntimeProfile.DEVELOPMENT,
+                LicenseMode.OFFLINE,
+                safe_runtime.bootstrap_plan_bindings,
+                actions,
+            )
 
 
 def test_registry_has_one_complete_immutable_definition_per_action() -> None:
@@ -1035,6 +1218,273 @@ def test_minio_probe_is_structurally_acceptance_only(
         )
 
 
+_FROZEN_RANK_INDEX = {
+    value: index for index, value in enumerate(FROZEN_ACTION_RANK_VALUES)
+}
+
+
+def _frozen_order(actions: tuple[PlannedAction, ...]) -> tuple[PlannedAction, ...]:
+    return tuple(
+        sorted(
+            actions,
+            key=lambda row: (
+                _FROZEN_RANK_INDEX[row.code.value],
+                "" if row.target_kind is None else row.target_kind.value,
+                "" if row.target_id is None else row.target_id,
+            ),
+        )
+    )
+
+
+def _all_action_subsets(
+    actions: tuple[PlannedAction, ...],
+) -> tuple[tuple[PlannedAction, ...], ...]:
+    return tuple(
+        subset
+        for size in range(len(actions) + 1)
+        for subset in itertools.combinations(actions, size)
+    )
+
+
+def _repair_completion_bindings(
+    safe_runtime: SafeRuntimeFixture,
+    suffix: tuple[PlannedAction, ...],
+) -> BootstrapPlanBindings:
+    bindings = _fresh_bootstrap_bindings(safe_runtime)
+    has_probe = any(
+        row.code is ActionCode.BOOTSTRAP_PROBE_INVITATION for row in suffix
+    )
+    has_create_key = any(
+        row.code is ActionCode.BOOTSTRAP_CREATE_API_KEY for row in suffix
+    )
+    return replace(
+        bindings,
+        invitation_probe=bindings.invitation_probe if has_probe else None,
+        api_key_capture=None if has_create_key else _capture_binding(safe_runtime),
+    )
+
+
+def test_registry_accepts_all_optional_infrastructure_families(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    bootstrap_optional = tuple(
+        _action(code)
+        for code in (
+            ActionCode.RUNTIME_INSTALL_CONTROL,
+            ActionCode.TOOLCHAIN_INSTALL,
+            ActionCode.IMAGES_PULL_EXACT,
+            ActionCode.BUILD_API,
+            ActionCode.FRONTEND_VERIFY,
+            ActionCode.SYSTEMD_INSTALL_UNITS,
+        )
+    )
+    for optional in _all_action_subsets(bootstrap_optional):
+        ActionRegistry.validate(
+            Operation.BOOTSTRAP,
+            RuntimeProfile.DEVELOPMENT,
+            LicenseMode.OFFLINE,
+            _fresh_bootstrap_bindings(safe_runtime),
+            _frozen_order(
+                _legal_branch("bootstrap", LicenseMode.OFFLINE) + optional
+            ),
+        )
+
+    repair_api_optional = (
+        _action(ActionCode.RUNTIME_INSTALL_CONTROL),
+        _action(ActionCode.TOOLCHAIN_INSTALL),
+        _action(ActionCode.IMAGES_PULL_EXACT),
+        _action(
+            ActionCode.COMPOSE_START_STATE_GATEWAY,
+            ActionTargetKind.COMPOSE_RESOURCE_SET,
+            COMPOSE_TARGET,
+        ),
+        _action(ActionCode.BUILD_API),
+        _action(ActionCode.SYSTEMD_INSTALL_UNITS),
+    )
+    for optional in _all_action_subsets(repair_api_optional):
+        ActionRegistry.validate(
+            Operation.REPAIR,
+            RuntimeProfile.DEVELOPMENT,
+            LicenseMode.OFFLINE,
+            safe_runtime.bootstrap_plan_bindings,
+            _frozen_order(
+                _legal_branch("repair-discovery", LicenseMode.OFFLINE)
+                + optional
+            ),
+        )
+
+    repair_full_optional = repair_api_optional + (
+        _action(ActionCode.FRONTEND_VERIFY),
+    )
+    for optional in _all_action_subsets(repair_full_optional):
+        for branch, mode in (
+            ("repair-completion", LicenseMode.OFFLINE),
+            ("repair-readiness", LicenseMode.ONLINE),
+            ("repair-budget", LicenseMode.ONLINE),
+        ):
+            bindings = (
+                _fresh_bootstrap_bindings(safe_runtime)
+                if branch == "repair-completion"
+                else safe_runtime.bootstrap_plan_bindings
+            )
+            ActionRegistry.validate(
+                Operation.REPAIR,
+                RuntimeProfile.DEVELOPMENT,
+                mode,
+                bindings,
+                _frozen_order(_legal_branch(branch, mode) + optional),
+            )
+
+
+def test_registry_accepts_conditional_frontend_and_offline_guard_forms(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    start_active = _frozen_order(
+        _legal_branch("start-active", LicenseMode.OFFLINE)
+        + (_action(ActionCode.PROCESS_START_FRONTEND),)
+    )
+    ActionRegistry.validate(
+        Operation.START,
+        RuntimeProfile.DEVELOPMENT,
+        LicenseMode.OFFLINE,
+        safe_runtime.bootstrap_plan_bindings,
+        start_active,
+    )
+
+    cases = (
+        (Operation.RESTART_API, _legal_branch("restart-api", LicenseMode.OFFLINE)),
+        (Operation.STOP, _legal_branch("stop", LicenseMode.OFFLINE)),
+        (Operation.SWITCH_LICENSE, _legal_branch("switch-license", LicenseMode.ONLINE)),
+    )
+    for operation, base in cases:
+        ActionRegistry.validate(
+            operation,
+            RuntimeProfile.DEVELOPMENT,
+            LicenseMode.ONLINE if operation is Operation.SWITCH_LICENSE else LicenseMode.OFFLINE,
+            None if operation is Operation.STOP else safe_runtime.bootstrap_plan_bindings,
+            _frozen_order(base + (_action(ActionCode.LICENSE_STOP_GUARD),)),
+        )
+
+    ActionRegistry.validate(
+        Operation.SWITCH_LICENSE,
+        RuntimeProfile.DEVELOPMENT,
+        LicenseMode.ONLINE,
+        safe_runtime.bootstrap_plan_bindings,
+        _frozen_order(
+            _legal_branch("switch-license", LicenseMode.ONLINE)
+            + (_action(ActionCode.PROCESS_START_FRONTEND),)
+        ),
+    )
+
+
+def test_registry_accepts_every_contiguous_completion_suffix_language(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    full = _c_full()
+    probe_resolved = tuple(
+        row
+        for row in full
+        if row.code is not ActionCode.BOOTSTRAP_PROBE_INVITATION
+    )
+    prefix = (
+        _action(ActionCode.GATEWAY_FAIL_CLOSED),
+        *_n_actions(LicenseMode.OFFLINE),
+        _action(ActionCode.PROCESS_START_FRONTEND),
+        _action(ActionCode.READINESS_REQUIRE_API_LOOPBACK),
+    )
+    for language in (full, probe_resolved):
+        for start in range(len(language)):
+            suffix = language[start:]
+            ActionRegistry.validate(
+                Operation.REPAIR,
+                RuntimeProfile.DEVELOPMENT,
+                LicenseMode.OFFLINE,
+                _repair_completion_bindings(safe_runtime, suffix),
+                prefix + suffix + _p_actions(),
+            )
+
+
+def test_minio_is_only_allowed_for_acceptance_bootstrap_or_two_repair_forms(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    minio = (_action(ActionCode.READINESS_PROBE_MINIO_ROUTE),)
+    legal = (
+        (
+            Operation.BOOTSTRAP,
+            LicenseMode.OFFLINE,
+            _fresh_bootstrap_bindings(safe_runtime),
+            _legal_branch("bootstrap", LicenseMode.OFFLINE) + minio,
+        ),
+        (
+            Operation.REPAIR,
+            LicenseMode.OFFLINE,
+            _fresh_bootstrap_bindings(safe_runtime),
+            _legal_branch("repair-completion", LicenseMode.OFFLINE) + minio,
+        ),
+        (
+            Operation.REPAIR,
+            LicenseMode.ONLINE,
+            safe_runtime.bootstrap_plan_bindings,
+            _legal_branch("repair-readiness", LicenseMode.ONLINE) + minio,
+        ),
+    )
+    for operation, mode, bindings, actions in legal:
+        ActionRegistry.validate(
+            operation,
+            RuntimeProfile.ACCEPTANCE,
+            mode,
+            bindings,
+            actions,
+        )
+
+    with pytest.raises(DeploymentError):
+        ActionRegistry.validate(
+            Operation.START,
+            RuntimeProfile.ACCEPTANCE,
+            LicenseMode.OFFLINE,
+            safe_runtime.bootstrap_plan_bindings,
+            _legal_branch("start-active", LicenseMode.OFFLINE) + minio,
+        )
+
+
+def test_fresh_bootstrap_requires_exact_frozen_binding_projection(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    actions = _legal_branch("bootstrap", LicenseMode.OFFLINE)
+    valid = _fresh_bootstrap_bindings(safe_runtime)
+    credentials = list(valid.credentials or ())
+    credentials[0] = replace(credentials[0], candidate_file=None)
+    invalid = (
+        replace(valid, invitation_probe=None),
+        replace(valid, api_key_capture=_capture_binding(safe_runtime)),
+        replace(
+            valid,
+            api_key_cleanup=ApiKeyCleanupPlanBinding(
+                attempt_id="e" * 32,
+                api_key_id=42,
+                terminal_outcome=ApiKeyCleanupOutcome.PUBLISHED,
+                historical_captured_file=safe_runtime.stat_binding(
+                    "api-key:capture",
+                    780,
+                ),
+                observed_captured_file=None,
+                phase2_env_file=valid.phase2_env_file,
+            ),
+        ),
+        replace(valid, phase2_env_file=None),
+        replace(valid, credentials=tuple(credentials)),
+    )
+    for bindings in invalid:
+        with pytest.raises(DeploymentError):
+            ActionRegistry.validate(
+                Operation.BOOTSTRAP,
+                RuntimeProfile.DEVELOPMENT,
+                LicenseMode.OFFLINE,
+                bindings,
+                actions,
+            )
+
+
 def _rehash_plan_mapping(value: dict[str, object]) -> dict[str, object]:
     unsigned = copy.deepcopy(value)
     unsigned.pop("plan_sha256", None)
@@ -1067,6 +1517,25 @@ def test_plan_rejects_invalid_injected_nonce(
     with pytest.raises(DeploymentError) as caught:
         safe_runtime.make_plan(plan_nonce=nonce)
     assert caught.value.code == "CMMS-E011"
+
+
+def test_plan_create_requires_caller_injected_nonce_without_random_fallback(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    with patch(
+        "ifactory_cmms_deploy.records.secrets.token_hex",
+        side_effect=AssertionError("random nonce fallback must not run"),
+    ):
+        with pytest.raises(TypeError):
+            DeploymentPlan.create(
+                snapshot=safe_runtime.make_snapshot(),
+                operation=Operation.START,
+                profile=RuntimeProfile.DEVELOPMENT,
+                license_mode=LicenseMode.OFFLINE,
+                bootstrap_bindings=safe_runtime.bootstrap_plan_bindings,
+                actions=_legal_branch("start-active", LicenseMode.OFFLINE),
+                now=NOW,
+            )
 
 
 def test_distinct_injected_nonce_produces_distinct_plan_hash(
@@ -1286,6 +1755,16 @@ def test_plan_application_record_enforces_generation_and_state_graph() -> None:
         succeeded.transition(PlanApplicationState.FAILED, now=NOW + timedelta(seconds=3))
 
 
+def test_application_transition_accepts_exact_secondary_result_codes_keyword() -> None:
+    attempted = PlanApplicationRecord.attempted("1" * 64, NOW, "a" * 32)
+    claimed = attempted.transition(
+        PlanApplicationState.IN_PROGRESS,
+        NOW + timedelta(seconds=1),
+        secondary_result_codes=(),
+    )
+    assert claimed.state is PlanApplicationState.IN_PROGRESS
+
+
 @pytest.mark.parametrize("state", [PlanApplicationState.CONTENDED, PlanApplicationState.REJECTED])
 def test_preclaim_terminal_application_states_have_exact_primary_code(
     state: PlanApplicationState,
@@ -1490,6 +1969,130 @@ def test_two_plans_cannot_hold_write_lease_and_loser_only_contends(
     owner.close()
 
 
+def test_inherited_fork_cannot_use_parent_deployment_lease(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    plan = safe_runtime.make_plan(plan_nonce="5" * 32)
+    path, digest = write_plan(plan, safe_runtime.plans_dir)
+    reservation = reserve_plan_attempt(
+        path,
+        digest,
+        plan.created_at,
+        safe_runtime.plans_dir,
+        application_id="6" * 32,
+    )
+    lease = acquire_deployment_write_lease(safe_runtime.lock_path, reservation)
+    read_fd, write_fd = os.pipe()
+    child_pid = os.fork()
+    if child_pid == 0:
+        os.close(read_fd)
+        try:
+            load_confirmed_plan(
+                reservation,
+                plan.snapshot,
+                plan.bootstrap_bindings,
+                lease,
+            )
+        except DeploymentError as error:
+            os.write(write_fd, error.code.encode("ascii"))
+        else:
+            os.write(write_fd, b"LEASE_ACCEPTED")
+        finally:
+            os.close(write_fd)
+        os._exit(0)
+
+    os.close(write_fd)
+    try:
+        result = os.read(read_fd, 64).decode("ascii")
+        waited_pid, status = os.waitpid(child_pid, 0)
+        assert waited_pid == child_pid
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert result == "CMMS-E012"
+        load_confirmed_plan(
+            reservation,
+            plan.snapshot,
+            plan.bootstrap_bindings,
+            lease,
+        )
+    finally:
+        os.close(read_fd)
+        lease.close()
+
+
+def test_lock_path_inode_replacement_cannot_create_a_second_valid_lease(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    first = safe_runtime.make_plan(plan_nonce="7" * 32)
+    second = safe_runtime.make_plan(plan_nonce="8" * 32)
+    first_path, first_hash = write_plan(first, safe_runtime.plans_dir)
+    second_path, second_hash = write_plan(second, safe_runtime.plans_dir)
+    first_reservation = reserve_plan_attempt(
+        first_path,
+        first_hash,
+        first.created_at,
+        safe_runtime.plans_dir,
+        application_id="9" * 32,
+    )
+    second_reservation = reserve_plan_attempt(
+        second_path,
+        second_hash,
+        second.created_at,
+        safe_runtime.plans_dir,
+        application_id="a" * 32,
+    )
+    owner = acquire_deployment_write_lease(safe_runtime.lock_path, first_reservation)
+    displaced = safe_runtime.runtime_dir / "displaced-apply.lock"
+    os.replace(safe_runtime.lock_path, displaced)
+    safe_runtime.lock_path.write_bytes(b"")
+    safe_runtime.lock_path.chmod(0o600)
+    try:
+        with pytest.raises(DeploymentError) as caught:
+            acquire_deployment_write_lease(
+                safe_runtime.lock_path,
+                second_reservation,
+            )
+        assert caught.value.code == "CMMS-E014"
+        assert PlanApplicationRecord.load(second_reservation.application_path).state is (
+            PlanApplicationState.CONTENDED
+        )
+        with pytest.raises(DeploymentError) as stale:
+            load_confirmed_plan(
+                first_reservation,
+                first.snapshot,
+                first.bootstrap_bindings,
+                owner,
+            )
+        assert stale.value.code == "CMMS-E012"
+    finally:
+        owner.close()
+
+
+def test_deployment_lease_rejects_noncanonical_lock_path_spelling(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    plan = safe_runtime.make_plan(plan_nonce="b" * 32)
+    path, digest = write_plan(plan, safe_runtime.plans_dir)
+    reservation = reserve_plan_attempt(
+        path,
+        digest,
+        plan.created_at,
+        safe_runtime.plans_dir,
+        application_id="c" * 32,
+    )
+    alias = (
+        safe_runtime.runtime_dir
+        / "plans"
+        / ".."
+        / "cmms-development-apply.lock"
+    )
+    with pytest.raises(DeploymentError) as caught:
+        acquire_deployment_write_lease(alias, reservation)
+    assert caught.value.code == "CMMS-E012"
+    assert PlanApplicationRecord.load(reservation.application_path).state is (
+        PlanApplicationState.ATTEMPTED
+    )
+
+
 @pytest.mark.parametrize(
     "capability",
     [
@@ -1676,6 +2279,31 @@ def test_state_record_round_trips_complete_fixed_schema() -> None:
     assert StateRecord.from_bytes(canonical_json_bytes(value)) == record
 
 
+def test_state_public_constructor_validates_and_exposes_complete_typed_surface() -> None:
+    invalid = _state_mapping()
+    invalid["generation"] = 0
+    with pytest.raises(DeploymentError):
+        StateRecord(invalid)
+
+    record = StateRecord(_state_mapping())
+    for field, expected in _state_mapping().items():
+        actual = getattr(record, field)
+        if field in {"root_status", "cmms_status"}:
+            assert isinstance(actual, SourceStatus)
+        elif field == "gateway_mode":
+            assert isinstance(actual, GatewayMode)
+        elif field == "license_mode":
+            assert isinstance(actual, LicenseMode)
+        elif field == "bootstrap_state":
+            assert isinstance(actual, BootstrapState)
+        elif field == "last_operation":
+            assert isinstance(actual, Operation)
+        elif field == "updated_at":
+            assert isinstance(actual, datetime)
+        else:
+            assert actual == expected
+
+
 def test_state_record_rejects_every_missing_field_and_unknown_field() -> None:
     value = _state_mapping()
     for field in value:
@@ -1805,6 +2433,36 @@ SCHEMAS = (
     BOOTSTRAP_RECEIPT_SCHEMA,
     ACCEPTANCE_RECEIPT_SCHEMA,
 )
+
+FROZEN_SCHEMA_EXPECTATIONS = {
+    "StartPermit": (
+        ("schema_version", "nonce", "plan_sha256", "created_at", "expires_at", "uid", "root_sha", "cmms_source_fingerprint", "api_artifact_sha256", "controller_entrypoint_sha256", "controller_package_sha256", "unit_generation", "loopback_gateway_sha256", "docker_gateway_ipv4", "license_mode", "budget_debit_id"),
+        {"schema_version": 1},
+    ),
+    "BudgetLedger": (
+        ("schema_version", "zone", "local_date", "controlled_limit", "source_limit", "attempts", "previous_ledger_sha256", "continuity_state"),
+        {"schema_version": 1, "zone": "Asia/Shanghai", "controlled_limit": 10, "source_limit": 20},
+    ),
+    "BudgetRecoveryReceipt": (
+        ("schema_version", "record_type", "status", "plan_sha256", "local_date", "unknown_reason_code", "original_bytes_present", "original_ledger_sha256", "recovery_debit_id", "api_main_pid", "api_process_start_ticks", "safe_result_code", "created_at", "updated_at"),
+        {"schema_version": 1, "record_type": "cmms-budget-recovery-receipt"},
+    ),
+    "BootstrapReceipt": (
+        ("schema_version", "record_type", "receipt_generation", "origin_plan_sha256", "last_plan_sha256", "state", "super_admin_user_id", "company_id", "company_settings_id", "organization_admin_user_id", "role_id", "invitation_email_hash", "runtime_user_id", "api_key_id", "api_key_label", "api_key_capture_attempt_id", "api_key_capture_status", "api_key_capture_file", "phase2_publish_status", "phase2_env_file", "api_key_capture_cleared", "revoked_api_key_ids", "action_attempts", "probe_user_id", "action_result_codes", "created_at", "updated_at"),
+        {"schema_version": 1, "record_type": "cmms-bootstrap-receipt"},
+    ),
+    "AcceptanceReceipt": (
+        ("schema_version", "record_type", "plan_sha256", "root_sha", "cmms_gitlink", "cmms_head", "api_artifact_sha256", "controller_entrypoint_sha256", "controller_package_sha256", "unit_generation", "api_main_pid", "api_process_start_ticks", "gateway_ipv4", "gateway_generation", "license_mode", "company_id", "organization_admin_user_id", "runtime_user_id", "role_id", "api_key_id", "asset_total", "work_order_total", "preopen_report_sha256", "preopen_check_codes", "postopen_report_sha256", "postopen_check_codes", "minio_probe_result_sha256", "minio_probe_check_codes", "minio_cleanup_code", "checked_at"),
+        {"schema_version": 1, "record_type": "cmms-acceptance-receipt"},
+    ),
+}
+
+
+def test_fixed_schema_envelopes_match_frozen_literal_contract() -> None:
+    assert {
+        schema.record_name: (schema.required_fields, dict(schema.fixed_values))
+        for schema in SCHEMAS
+    } == FROZEN_SCHEMA_EXPECTATIONS
 
 
 def _schema_value(schema: FixedRecordSchema) -> dict[str, object]:
