@@ -47,7 +47,6 @@ _MAX_JAVA_LONG = 9_223_372_036_854_775_807
 _PLAN_MAX_BYTES = 1024 * 1024
 _APPLICATION_MAX_BYTES = 64 * 1024
 _CAPABILITY_TOKEN = object()
-_WRITTEN_PLANS: dict[str, Any] = {}
 
 _SECRET_FIELD_NAMES = frozenset(
     {
@@ -1731,7 +1730,6 @@ def write_plan(plan: DeploymentPlan, plans_dir: Path) -> tuple[Path, str]:
         replace=False,
         policy=_plan_policy(Path(plans_dir), (path,)),
     )
-    _WRITTEN_PLANS[os.path.abspath(path)] = plan
     return path, plan.plan_sha256
 
 
@@ -1904,9 +1902,9 @@ def _transition_application(
     policy = RuntimePathPolicy.for_test(path.parent, allowed_files={path})
     try:
         parent_fd, name = open_verified_parent(path, policy=policy)
+        fcntl.flock(parent_fd, fcntl.LOCK_EX)
         fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
         require_private_regular_file(os.fstat(fd), expected_uid=os.getuid())
-        fcntl.flock(fd, fcntl.LOCK_EX)
         current = PlanApplicationRecord.load(path)
         if current != expected:
             raise _plan_consumed()
@@ -1969,9 +1967,6 @@ def reserve_plan_attempt(
     digest = _require_hex64(confirmed_sha256)
     timestamp = _parse_utc(_format_utc(now))
     plan = _load_plan_file(path, plans_dir)
-    original = _WRITTEN_PLANS.get(os.path.abspath(path))
-    if type(original) is DeploymentPlan and original == plan:
-        plan = original
     if digest != plan.plan_sha256 or not (plan.created_at <= timestamp <= plan.expires_at):
         raise _confirmation_failed()
     application = PlanApplicationRecord.attempted(plan.plan_sha256, timestamp, application_id)

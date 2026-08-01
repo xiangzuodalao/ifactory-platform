@@ -30,6 +30,7 @@ from ifactory_cmms_deploy.records import (
     SourceStatus,
     _CAPABILITY_TOKEN,
     _create_gateway_fail_closed_authority_parts,
+    _transition_application,
     acquire_deployment_write_lease,
     claim_plan_application,
     load_confirmed_plan,
@@ -252,6 +253,16 @@ class SafeRuntimeFixture:
             lease._directory_identity,
         )
         return other_confirmed, other_lease
+
+    def transition_application(
+        self,
+        path: Path,
+        expected: PlanApplicationRecord,
+        state: Any,
+        now: datetime,
+    ) -> PlanApplicationRecord:
+        """Drive the private application CAS boundary in concurrency tests."""
+        return _transition_application(path, expected, state, now)
 
     def claimed_context(
         self,

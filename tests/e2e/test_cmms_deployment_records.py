@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import gc
 import hashlib
 import itertools
 import json
@@ -10,6 +11,8 @@ import os
 import pickle
 import shutil
 import stat
+import threading
+import weakref
 from unittest.mock import patch
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
@@ -20,6 +23,9 @@ import pytest
 from e2e.support import SafeRuntimeFixture
 from ifactory_cmms_deploy.config import BootstrapConfig, RuntimeConfig
 from ifactory_cmms_deploy.errors import DeploymentError
+from ifactory_cmms_deploy.secure_io import (
+    atomic_write_private as real_atomic_write_private,
+)
 from ifactory_cmms_deploy.records import (
     ACCEPTANCE_RECEIPT_SCHEMA,
     ACTION_RANK,
@@ -2818,6 +2824,96 @@ def test_application_transition_accepts_exact_secondary_result_codes_keyword() -
     assert claimed.state is PlanApplicationState.IN_PROGRESS
 
 
+def test_application_transition_lock_survives_atomic_inode_replacement(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    plan = safe_runtime.make_plan(plan_nonce="9" * 32)
+    path, digest = write_plan(plan, safe_runtime.plans_dir)
+    reservation = reserve_plan_attempt(
+        path,
+        digest,
+        NOW,
+        safe_runtime.plans_dir,
+        application_id="8" * 32,
+    )
+    first_replaced = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    results: dict[str, PlanApplicationRecord] = {}
+    errors: dict[str, BaseException] = {}
+
+    def delayed_atomic_write(*args: object, **kwargs: object) -> None:
+        real_atomic_write_private(*args, **kwargs)  # type: ignore[arg-type]
+        if threading.current_thread().name == "cmms-first-transition":
+            first_replaced.set()
+            if not release_first.wait(timeout=5):
+                raise AssertionError("timed out waiting to release first transition")
+
+    def transition(
+        name: str,
+        expected: PlanApplicationRecord,
+        state: PlanApplicationState,
+        when: datetime,
+        done: threading.Event | None = None,
+    ) -> None:
+        try:
+            results[name] = safe_runtime.transition_application(
+                reservation.application_path,
+                expected,
+                state,
+                when,
+            )
+        except BaseException as caught:
+            errors[name] = caught
+        finally:
+            if done is not None:
+                done.set()
+
+    with patch(
+        "ifactory_cmms_deploy.records.atomic_write_private",
+        side_effect=delayed_atomic_write,
+    ):
+        first = threading.Thread(
+            name="cmms-first-transition",
+            target=transition,
+            args=(
+                "first",
+                reservation.application,
+                PlanApplicationState.IN_PROGRESS,
+                NOW + timedelta(seconds=1),
+            ),
+        )
+        first.start()
+        assert first_replaced.wait(timeout=5)
+        intermediate = PlanApplicationRecord.load(reservation.application_path)
+        assert intermediate.state is PlanApplicationState.IN_PROGRESS
+
+        second = threading.Thread(
+            name="cmms-second-transition",
+            target=transition,
+            args=(
+                "second",
+                intermediate,
+                PlanApplicationState.SUCCEEDED,
+                NOW + timedelta(seconds=2),
+                second_done,
+            ),
+        )
+        second.start()
+        try:
+            assert not second_done.wait(timeout=0.25)
+        finally:
+            release_first.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == {}
+    assert results["first"].state is PlanApplicationState.IN_PROGRESS
+    assert results["second"].state is PlanApplicationState.SUCCEEDED
+
+
 @pytest.mark.parametrize("state", [PlanApplicationState.CONTENDED, PlanApplicationState.REJECTED])
 def test_preclaim_terminal_application_states_have_exact_primary_code(
     state: PlanApplicationState,
@@ -3167,10 +3263,32 @@ def test_confirmed_plan_exposes_only_immutable_plan_payload(
     safe_runtime: SafeRuntimeFixture,
 ) -> None:
     plan, _reservation, lease, confirmed = _confirmed_plan(safe_runtime)
-    assert confirmed.plan is plan
+    assert confirmed.plan == plan
+    assert confirmed.plan is not plan
     with pytest.raises((AttributeError, FrozenInstanceError)):
         confirmed.plan = plan  # type: ignore[misc]
     lease.close()
+
+
+def test_write_plan_does_not_retain_plan_in_process_memory(
+    safe_runtime: SafeRuntimeFixture,
+) -> None:
+    plan = safe_runtime.make_plan(plan_nonce="7" * 32)
+    created_at = plan.created_at
+    path, digest = write_plan(plan, safe_runtime.plans_dir)
+    plan_reference = weakref.ref(plan)
+    del plan
+    gc.collect()
+
+    assert plan_reference() is None
+    reservation = reserve_plan_attempt(
+        path,
+        digest,
+        created_at,
+        safe_runtime.plans_dir,
+        application_id="6" * 32,
+    )
+    assert reservation.plan.plan_sha256 == digest
 
 
 def test_gateway_authority_exact_graph_and_replay_rejection(
