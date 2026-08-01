@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import stat
+import subprocess
 import sys
 import time
 from dataclasses import FrozenInstanceError
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+import ifactory_cmms_deploy
 from ifactory_cmms_deploy import process as secure_process
 from ifactory_cmms_deploy import secure_io
 from ifactory_cmms_deploy.cli import main
@@ -899,3 +901,51 @@ def test_cli_unknown_option_returns_stable_unavailable_error(
     assert exit_code == 20
     assert captured.out == ""
     assert captured.err == "CMMS-E020 command-not-available\n"
+
+
+@pytest.mark.parametrize("command", ["status", "secret", "plan", "apply", "internal"])
+def test_task2_public_commands_remain_stably_unavailable(
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    exit_code = main([command])
+
+    captured = capsys.readouterr()
+    assert exit_code == 20
+    assert captured.out == ""
+    assert captured.err == "CMMS-E020 command-not-available\n"
+
+
+def test_internal_capabilities_and_gateway_authority_are_not_root_exports() -> None:
+    forbidden = (
+        "ConfirmedDeploymentPlan",
+        "PlanAttemptReservation",
+        "DeploymentWriteLease",
+        "FailClosedEvidence",
+        "ClaimedApplyContext",
+        "GatewayListenerChallenge",
+        "GatewayListenerAbsentProof",
+        "_create_gateway_fail_closed_authority_parts",
+    )
+    assert all(not hasattr(ifactory_cmms_deploy, name) for name in forbidden)
+
+
+def test_cmms_wrapper_forwards_to_frozen_uv_and_keeps_commands_unavailable() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    wrapper = repository_root / "scripts" / "cmms-development.sh"
+
+    completed = subprocess.run(
+        (str(wrapper), "status"),
+        cwd=repository_root,
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 20
+    assert completed.stdout == ""
+    assert completed.stderr == "CMMS-E020 command-not-available\n"
