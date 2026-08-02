@@ -501,6 +501,117 @@ class SourceBinding:
 
 
 @dataclass(frozen=True)
+class InstalledToolchain:
+    """One verified, locally resolved toolchain installation."""
+
+    name: str
+    version: str
+    archive_sha256: str
+    home: Path = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.name not in {"temurin", "maven", "node"}:
+            raise _invalid_record()
+        version = _require_string(self.version)
+        if (
+            not version.isascii()
+            or not version.isprintable()
+            or "/" in version
+            or "\\" in version
+            or version in {".", ".."}
+        ):
+            raise _invalid_record()
+        _require_hex64(self.archive_sha256)
+        if not isinstance(self.home, Path) or not self.home.is_absolute():
+            raise _invalid_record()
+        try:
+            canonical = Path(os.path.abspath(os.fspath(self.home)))
+        except (OSError, TypeError, ValueError):
+            raise _invalid_record() from None
+        if canonical != self.home:
+            raise _invalid_record()
+
+
+@dataclass(frozen=True)
+class ToolchainReceipt:
+    """In-memory receipt for the exact verified toolchain set."""
+
+    manifest_sha256: str
+    installations: tuple[InstalledToolchain, ...]
+
+    def __post_init__(self) -> None:
+        _require_hex64(self.manifest_sha256)
+        if type(self.installations) is not tuple or any(
+            type(row) is not InstalledToolchain for row in self.installations
+        ):
+            raise _invalid_record()
+        if tuple(row.name for row in self.installations) != (
+            "temurin",
+            "maven",
+            "node",
+        ):
+            raise _invalid_record()
+
+    def require(self, name: str) -> InstalledToolchain:
+        if type(name) is not str:
+            raise _invalid_record()
+        for row in self.installations:
+            if row.name == name:
+                return row
+        raise _invalid_record()
+
+
+@dataclass(frozen=True)
+class BuildArtifact:
+    """Verified API artifact bound to one confirmed source/toolchain snapshot."""
+
+    source: SourceBinding
+    toolchain_manifest_sha256: str
+    sensitive_manifest_sha256: str
+    artifact_sha256: str
+    path: Path = field(repr=False)
+    targeted_tests_passed: bool
+
+    def __post_init__(self) -> None:
+        if type(self.source) is not SourceBinding:
+            raise _invalid_record()
+        for value in (
+            self.toolchain_manifest_sha256,
+            self.sensitive_manifest_sha256,
+            self.artifact_sha256,
+        ):
+            _require_hex64(value)
+        if not isinstance(self.path, Path) or not self.path.is_absolute():
+            raise _invalid_record()
+        try:
+            canonical = Path(os.path.abspath(os.fspath(self.path)))
+        except (OSError, TypeError, ValueError):
+            raise _invalid_record() from None
+        if canonical != self.path or type(self.targeted_tests_passed) is not bool:
+            raise _invalid_record()
+
+
+@dataclass(frozen=True)
+class DependencyReceipt:
+    """Verified frontend dependencies bound to one source/toolchain snapshot."""
+
+    source: SourceBinding
+    toolchain_manifest_sha256: str
+    sensitive_manifest_sha256: str
+    frontend_lock_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.source) is not SourceBinding:
+            raise _invalid_record()
+        for value in (
+            self.toolchain_manifest_sha256,
+            self.sensitive_manifest_sha256,
+            self.frontend_lock_sha256,
+        ):
+            _require_hex64(value)
+
+
+@dataclass(frozen=True)
 class DeploymentSnapshot:
     source: SourceBinding
     config_sha256: str
@@ -2329,6 +2440,43 @@ class ClaimedApplyContext(_OpaqueCapability):
     @property
     def application(self) -> PlanApplicationRecord:
         return self._application
+
+    def require_action(
+        self,
+        action: ActionCode | PlannedAction,
+    ) -> PlannedAction:
+        """Revalidate this live claim and return one exact planned action."""
+
+        if self._token is not _CAPABILITY_TOKEN:
+            raise _confirmation_failed()
+        if type(action) is ActionCode:
+            required = PlannedAction(action)
+        elif type(action) is PlannedAction:
+            required = action
+        else:
+            raise _confirmation_failed()
+        confirmed = self._evidence._confirmed
+        reservation = confirmed._reservation
+        if (
+            self._evidence._token is not _CAPABILITY_TOKEN
+            or not self._evidence._used
+            or confirmed._token is not _CAPABILITY_TOKEN
+            or confirmed.plan is not self._plan
+            or reservation.plan is not self._plan
+            or self._evidence._lease is not self._lease
+            or self._lease is not confirmed._lease
+        ):
+            raise _confirmation_failed()
+        self._lease._require_live(reservation)
+        current = PlanApplicationRecord.load(reservation.application_path)
+        if (
+            current != self._application
+            or reservation.application != self._application
+            or current.state is not PlanApplicationState.IN_PROGRESS
+            or required not in self._plan.actions
+        ):
+            raise _confirmation_failed()
+        return required
 
 
 def _require_gateway_ipv4(value: object) -> str:
