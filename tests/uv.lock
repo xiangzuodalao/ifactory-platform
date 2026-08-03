@@ -100,10 +100,16 @@ wheels = [
 ]
 
 [[package]]
+name = "ifactory-cmms-deploy"
+version = "0.1.0"
+source = { editable = "../deploy/cmms" }
+
+[[package]]
 name = "ifactory-platform-contract-tests"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "ifactory-cmms-deploy" },
     { name = "jsonschema" },
     { name = "openapi-spec-validator" },
     { name = "pytest" },
@@ -113,6 +119,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ifactory-cmms-deploy", editable = "../deploy/cmms" },
     { name = "jsonschema", specifier = ">=4.25,<5" },
     { name = "openapi-spec-validator", specifier = "==0.7.2" },
     { name = "pytest", specifier = "==9.0.2" },
