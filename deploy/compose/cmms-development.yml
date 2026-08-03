@@ -1,0 +1,113 @@
+name: ifactory-cmms-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    cpus: "1.0"
+    mem_limit: 1g
+    pids_limit: 256
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      MINIO_REGION_NAME: us-east-1
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    command:
+      - server
+      - /data
+      - --console-address
+      - :9001
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://127.0.0.1:9000/minio/health/live
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    cpus: "1.0"
+    mem_limit: 1g
+    pids_limit: 256
+
+  nginx:
+    image: nginx:1.27.0-alpine@sha256:a377278b7dde3a8012b25d141d025a88dbf9f5ed13c5cdf21ee241e7ec07ab57
+    platform: linux/amd64
+    network_mode: host
+    user: "101:101"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /usr/sbin/nginx
+    command:
+      - -g
+      - daemon off;
+      - -c
+      - /etc/ifactory-cmms/nginx.conf
+    tmpfs:
+      - /tmp:uid=101,gid=101,mode=0700
+    volumes:
+      - type: bind
+        source: "${CMMS_NGINX_RUNTIME_DIR:?CMMS_NGINX_RUNTIME_DIR is required}"
+        target: /etc/ifactory-cmms
+        read_only: true
+    healthcheck:
+      test:
+        - CMD
+        - /usr/sbin/nginx
+        - -t
+        - -q
+        - -c
+        - /etc/ifactory-cmms/nginx.conf
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 128
+
+secrets:
+  postgres_password:
+    file: "${POSTGRES_PASSWORD_FILE:?POSTGRES_PASSWORD_FILE is required}"
+  minio_root_user:
+    file: "${MINIO_ROOT_USER_FILE:?MINIO_ROOT_USER_FILE is required}"
+  minio_root_password:
+    file: "${MINIO_ROOT_PASSWORD_FILE:?MINIO_ROOT_PASSWORD_FILE is required}"
+
+volumes:
+  postgres_data: {}
+  minio_data: {}

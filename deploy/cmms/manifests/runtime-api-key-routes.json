@@ -1,0 +1,32 @@
+{
+  "asset_create_idempotency_key_pattern": "^pilot-asset:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+  "bindings": {
+    "cmms_openapi_contract_sha256": "ff3166e9d217d3ae072d59b5b167500a9b8e3285d5db8fac94b0551b8c56e33b",
+    "platform_integration_client_sha256": "ed2306132a6538e07810e966872e15d1f3cb00dbf093f479e3b7d6a6e3edefa5",
+    "platform_integration_gitlink": "b7ca04bf56e5e98493128f59619832c817baac1e"
+  },
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/auth/me",
+      "path_kind": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/work-orders/search",
+      "path_kind": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "^/api/assets/by-equipment-id/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "path_kind": "regex"
+    },
+    {
+      "method": "POST",
+      "path": "/api/assets",
+      "path_kind": "exact"
+    }
+  ],
+  "schema_version": 1,
+  "trusted_client_residual": "asset-create-equipment-id-body-is-trusted-client-and-confirmed-plan-responsibility-not-gateway-validation"
+}
