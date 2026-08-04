@@ -135,10 +135,18 @@ def test_closed_loop_compose_has_exact_services_networks_and_single_published_po
     assert services["tb-relay-init"]["cap_add"] == ["CHOWN", "FOWNER"]
     assert "rm -f" not in str(services["tb-relay-init"]["command"])
     assert "rm -f /relay/backend.sock /relay/ui.sock" in str(services["tb-host-relay"]["command"])
+    assert services["cmms-api"]["user"] == "${PILOT_HOST_UID:?required}:${PILOT_HOST_GID:?required}"
+    assert services["cmms-api"]["tmpfs"] == [
+        "/tmp:uid=${PILOT_HOST_UID:?required},gid=${PILOT_HOST_GID:?required},mode=0700"
+    ]
+    assert services["cmms-api"]["healthcheck"]["test"][-1].endswith("/health-check")
+    assert services["cmms-gateway"]["healthcheck"]["test"][-1].endswith("/health-check")
     for relay in ("tb-host-relay", "tb-relay"):
         assert services[relay]["user"] == "101:101"
         assert services[relay]["cap_drop"] == ["ALL"]
         assert "wget" in str(services[relay]["healthcheck"])
+    for service in ("cmms-gateway", "tb-host-relay", "tb-relay", "browser-gateway"):
+        assert services[service]["tmpfs"] == ["/tmp:uid=101,gid=101,mode=0700"]
 
 
 def test_role_credentials_are_minimal_and_closed_loop_is_explicit() -> None:
