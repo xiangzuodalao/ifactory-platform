@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+from uuid import UUID, uuid5
 
 import pytest
 
@@ -21,6 +22,7 @@ def _module(relative: str, name: str):
 
 
 bootstrap = _module("deploy/compose/scripts/pilot_bootstrap.py", "pilot_bootstrap")
+selector = _module("deploy/compose/scripts/pilot_select_equipment.py", "pilot_select_equipment")
 reset = _module("deploy/compose/scripts/pilot_reset.py", "pilot_reset")
 
 
@@ -145,6 +147,64 @@ def test_bootstrap_rejects_non_0600_env(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setenv("PILOT_ENV_FILE", str(env_file))
     with pytest.raises(bootstrap.BootstrapError, match="PILOT_ENV_FILE_INVALID"):
         bootstrap._update_env({"A": "C"})
+
+
+def test_equipment_selector_ignores_unrelated_thingsboard_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = UUID("00000000-0000-4000-8000-000000000001")
+    tb_tenant_id = "00000000-0000-4000-8000-000000000002"
+    tb_device_id = "00000000-0000-4000-8000-000000000003"
+    equipment_id = str(uuid5(tenant_id, f"pilot-equipment:{tb_device_id}"))
+    for key, value in {
+        "PLATFORM_INTEGRATION_TENANT_ID": str(tenant_id),
+        "PLATFORM_INTEGRATION_TB_TENANT_ID": tb_tenant_id,
+        "PLATFORM_INTEGRATION_CMMS_COMPANY_ID": "2",
+        "PLATFORM_INTEGRATION_TB_BASE_URL": "http://tb-relay:8080",
+        "PLATFORM_INTEGRATION_CMMS_BASE_URL": "http://cmms-gateway:8080",
+        "PILOT_TB_CREDENTIAL": '{"kind":"thingsboard_bearer","value":"tb-token"}',
+        "PILOT_CMMS_CREDENTIAL": '{"kind":"cmms_bearer","value":"cmms-token"}',
+    }.items():
+        monkeypatch.setenv(key, value)
+    devices = [
+        {
+            "id": {"id": tb_device_id},
+            "name": selector.DEVICE_NAME,
+            "type": "CNC",
+        },
+        *[
+            {
+                "id": {"id": f"00000000-0000-4000-8000-{index:012d}"},
+                "name": f"UNRELATED-{index}",
+                "type": "default",
+            }
+            for index in range(10, 20)
+        ],
+    ]
+    responses = iter(
+        [
+            (200, {"tenantId": {"id": tb_tenant_id}}),
+            (200, {"hasNext": False, "totalElements": len(devices), "data": devices}),
+            (
+                200,
+                [
+                    {"key": "equipment_id", "value": equipment_id},
+                    {"key": "cmms_asset_id", "value": 1},
+                ],
+            ),
+            (200, {"companyId": 2}),
+            (200, {"id": 1, "equipment_id": equipment_id}),
+        ]
+    )
+    monkeypatch.setattr(selector, "_request", lambda *args, **kwargs: next(responses))
+    updates: list[dict[str, str]] = []
+    monkeypatch.setattr(selector, "_update_env", updates.append)
+    monkeypatch.setattr(selector, "_write_receipt", lambda plan_hash, result: None)
+
+    result = selector._select_locked("a" * 64)
+
+    assert result["equipment_id"] == equipment_id
+    assert updates == [{"PLATFORM_INTEGRATION_PILOT_WORK_ORDER_EQUIPMENT_ID": equipment_id}]
 
 
 def test_reset_plan_accepts_only_exact_compose_labeled_volumes(
