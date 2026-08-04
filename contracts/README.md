@@ -17,6 +17,13 @@ Phase 1 的契约责任与兼容策略：
 - `cmms-integration-v1`：provider=CMMS，consumer=`platform-integration`，additive fields/endpoints；普通资产创建保持兼容，集成调用新增可选 `equipment_id`、幂等语义和按设备标识查询端点。
 - `equipment-mapping-v1`：定义租户范围内 `equipment_id`、`cmms_asset_id` 与 `tb_device_id` 的启用映射形状；跨记录唯一性由 `platform-integration` 存储层执行。
 
+预测性维护闭环试点增加两个加性契约：
+
+- `platform-integration-v1`：ThingsBoard Dashboard 使用当前浏览器身份预览并确认一份版本绑定、用户绑定的 CMMS 工单计划；写操作必须携带稳定幂等键。
+- `maintenance-alert-v1`：ThingsBoard Alarm details 的有界投影，只包含风险摘要、模型身份、维护状态和关联 ID，禁止原始遥测、完整 forecast 与凭据。
+
+`cmms-integration-v1` 同时增加预测性维护工单创建和按 external-ref 查询。普通工单创建仍保持原有 `200`；集成调用使用 `wo:{alert_id}` 幂等键并返回可重放的 `201`。
+
 约束如下：
 
 - 契约描述跨进程接口，不复制任一组件的内部 ORM、数据库表或私有领域对象。
