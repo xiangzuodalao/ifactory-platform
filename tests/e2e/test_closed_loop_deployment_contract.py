@@ -444,7 +444,11 @@ def test_wrapper_scrubs_ambient_compose_overrides(tmp_path: Path) -> None:
 
 def test_pilot_wrapper_enforces_verified_recovery_wait_and_complete_down_scope() -> None:
     wrapper = PILOT_WRAPPER.read_text(encoding="utf-8")
+    provider_start = (
+        "compose up -d --wait --wait-timeout 300 integration-db cmms-gateway tb-relay"
+    )
     assert wrapper.count("platform-integration provision-verify") == 3
+    assert wrapper.count(provider_start) == 2
     assert "up -d --build --wait --wait-timeout 300" in wrapper
     assert "--profile continuous --profile bootstrap --profile acceptance" in wrapper
     assert "pilot_cmms_status.py plan" in wrapper
