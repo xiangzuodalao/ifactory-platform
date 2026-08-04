@@ -40,6 +40,29 @@ Phase 1 契约测试覆盖：
 
 `contract/phase1` 只读取仓库内的合成 fixture 和契约文件，不连接真实服务或数据库，不执行模型训练、工单创建或其他外部写操作。
 
+闭环契约与部署边界的默认离线测试：
+
+```bash
+uv run --directory tests --frozen pytest \
+  contract/closed_loop \
+  e2e/test_closed_loop_deployment_contract.py \
+  e2e/test_closed_loop_bootstrap.py \
+  e2e/test_closed_loop_runtime_security.py \
+  e2e/test_closed_loop_state_io.py \
+  e2e/test_pilot_cmms_status.py -v
+```
+
+这些测试验证审批 API、CMMS 工单契约、Alarm details、Compose 网络/凭据隔离、网关
+allowlist、bootstrap/reset 的精确哈希确认、运行目录阶段绑定，以及状态写入的单次
+确认门；还覆盖双 env 物理隔离、ambient override 清除、短写/目录 fsync 与 reset
+删除前漂移拒绝。它们只执行 `docker compose config` 和 fake transport，不连接 Docker daemon、
+不启动容器、不访问真实服务，也不创建公司、Alarm 或工单。
+
+真实闭环不是默认 pytest：必须先按 `deploy/README.md` 完成隔离环境的各个独立
+plan/apply。`closed-loop-pilot.sh acceptance-verify` 会只读核对 integration DB、真实
+ThingsBoard Alarm 和真实 CMMS 工单；`ACTIVE`、`IN_PROGRESS`、`COMPLETE`、`CLEARED`
+四个里程碑共同证明 ACK 保留、工单状态回传、完成不提前清警，以及两轮健康后清警。
+
 ## Phase 2 离线与 opt-in 验收
 
 Phase 2 的默认测试只验证 Compose 渲染、fixture 脚本边界、遥测 seed 的

@@ -1,0 +1,252 @@
+openapi: 3.1.0
+info:
+  title: Predictive Maintenance Closed-Loop API
+  version: 1.0.0
+  description: >-
+    Provider: platform-integration. Consumer: the managed ThingsBoard dashboard.
+    A ThingsBoard browser token is delegated only for the duration of each request;
+    it is never exchanged for a platform session or persisted.
+  x-provider: platform-integration
+  x-consumers: [thingsboard-dashboard]
+  x-compatibility: additive and disabled unless closed_loop_enabled is true
+  x-timeout: 10s
+paths:
+  /api/v1/maintenance-alerts/{alert_id}/work-order-plan:
+    get:
+      operationId: previewPredictiveWorkOrder
+      summary: Preview the exact CMMS command before approval.
+      security:
+        - ThingsBoardDelegatedToken: []
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '200':
+          description: A user-bound, version-bound preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/maintenance-alerts/{alert_id}/actions:
+    post:
+      operationId: actOnMaintenanceAlert
+      summary: Apply one explicitly confirmed, idempotent alert action.
+      description: >-
+        CREATE_WORK_ORDER recomputes the exact plan while holding the alert lock.
+        A stale version or changed plan fails before a CMMS command is enqueued.
+      security:
+        - ThingsBoardDelegatedToken: []
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^alert-action:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(?:CREATE_WORK_ORDER|CLOSE_RISK)$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/CreateWorkOrderAction'
+                - $ref: '#/components/schemas/CloseRiskAction'
+      responses:
+        '202':
+          description: Action accepted or the original accepted response replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionAccepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+components:
+  securitySchemes:
+    ThingsBoardDelegatedToken:
+      type: apiKey
+      in: header
+      name: X-Authorization
+      description: The exact browser Bearer token issued by ThingsBoard.
+  parameters:
+    AlertId:
+      name: alert_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/CanonicalUuid'
+  responses:
+    BadRequest:
+      description: Request syntax, key, hash, or reason is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IntegrationError'
+    Unauthorized:
+      description: The delegated ThingsBoard token is absent or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IntegrationError'
+    Forbidden:
+      description: Tenant, Alarm visibility, approver, or pilot device authorization failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IntegrationError'
+    NotFound:
+      description: The tenant-scoped maintenance alert was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IntegrationError'
+    Conflict:
+      description: The alert version, plan, idempotency key, or current state conflicts.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IntegrationError'
+  schemas:
+    CanonicalUuid:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    DecimalString:
+      type: string
+      pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'
+    ForecastSummary:
+      type: object
+      additionalProperties: false
+      required: [minimum, maximum, mean, crossing_count]
+      properties:
+        minimum:
+          $ref: '#/components/schemas/DecimalString'
+        maximum:
+          $ref: '#/components/schemas/DecimalString'
+        mean:
+          $ref: '#/components/schemas/DecimalString'
+        crossing_count:
+          type: integer
+          minimum: 0
+    Threshold:
+      type: object
+      additionalProperties: false
+      required: [direction, value, unit]
+      properties:
+        direction:
+          enum: [ABOVE, BELOW]
+        value:
+          $ref: '#/components/schemas/DecimalString'
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 40
+    WorkOrderPlan:
+      type: object
+      additionalProperties: false
+      required:
+        - alert_id
+        - equipment_id
+        - meas_code
+        - risk_state
+        - maintenance_state
+        - expected_version
+        - priority
+        - forecast_summary
+        - threshold
+        - plan_hash
+      properties:
+        alert_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        equipment_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        meas_code:
+          type: string
+          minLength: 1
+          maxLength: 120
+        risk_state:
+          const: ACTIVE
+        maintenance_state:
+          const: PENDING_APPROVAL
+        expected_version:
+          type: integer
+          minimum: 1
+        priority:
+          const: HIGH
+        forecast_summary:
+          $ref: '#/components/schemas/ForecastSummary'
+        threshold:
+          $ref: '#/components/schemas/Threshold'
+        plan_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+    CreateWorkOrderAction:
+      type: object
+      additionalProperties: false
+      required: [action, expected_version, confirmed_plan_hash]
+      properties:
+        action:
+          const: CREATE_WORK_ORDER
+        expected_version:
+          type: integer
+          minimum: 1
+        confirmed_plan_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+    CloseRiskAction:
+      type: object
+      additionalProperties: false
+      required: [action, expected_version, reason]
+      properties:
+        action:
+          const: CLOSE_RISK
+        expected_version:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    ActionAccepted:
+      type: object
+      additionalProperties: false
+      required: [action_id, alert_id, action, status, correlation_id]
+      properties:
+        action_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        alert_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        action:
+          enum: [CREATE_WORK_ORDER, CLOSE_RISK]
+        status:
+          const: ACCEPTED
+        correlation_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+    IntegrationError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 100
+        message:
+          type: string
+          minLength: 1
+          maxLength: 500

@@ -1,14 +1,16 @@
 openapi: 3.1.0
 info:
-  title: CMMS Integration Asset API
+  title: CMMS Integration API
   version: 1.0.0
   description: >-
     Provider: CMMS. Consumer: platform-integration. Existing JWT Bearer
-    authentication derives company scope; this version is additive to ordinary asset creation.
+    authentication derives company scope; this version is additive to ordinary asset and
+    work-order creation.
   x-provider: cmms
   x-consumers:
     - platform-integration
-  x-compatibility: additive optional equipment_id field
+    - closed-loop-pilot-status-control
+  x-compatibility: additive asset identity and predictive work-order fields/endpoints
   x-timeout: 10s
   x-idempotency: company/key/request digest replays the original 201; body drift returns 409
 paths:
@@ -116,6 +118,146 @@ paths:
               example:
                 code: ASSET_NOT_FOUND
                 message: Asset was not found.
+  /api/work-orders:
+    post:
+      operationId: createWorkOrder
+      summary: Create an ordinary or predictive-maintenance work order.
+      description: >-
+        Ordinary requests keep the legacy 200 response. A predictive-maintenance
+        request supplies every integration identity field and the exact
+        wo:{external_ref} idempotency key; its original 201 response is replayed
+        for the same company, key, and canonical request digest.
+      security:
+        - CmmsJwtBearer: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: >-
+            Required for predictive-maintenance requests and equal to
+            wo:{canonical external_ref}. It is not required for legacy requests.
+          schema:
+            type: string
+            pattern: '^wo:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/LegacyWorkOrderCreateRequest'
+                - $ref: '#/components/schemas/PredictiveWorkOrderCreateRequest'
+      responses:
+        '200':
+          description: Ordinary legacy work-order creation completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderResponse'
+        '201':
+          description: Predictive work order created or its original response replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictiveWorkOrderResponse'
+        '400':
+          description: Integration identity or idempotency key is incomplete or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CmmsError'
+        '409':
+          description: The idempotency key or frozen external identity conflicts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CmmsError'
+  /api/work-orders/by-external-ref:
+    get:
+      operationId: getWorkOrderByExternalRef
+      summary: Reconcile a predictive work order by its frozen external identity.
+      description: The lookup is scoped to the company derived from the authenticated bearer.
+      security:
+        - CmmsJwtBearer: []
+      parameters:
+        - name: source
+          in: query
+          required: true
+          schema:
+            const: PDM_FORECAST
+        - name: ref
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/CanonicalUuid'
+      responses:
+        '200':
+          description: Current company-scoped work-order state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictiveWorkOrderResponse'
+        '404':
+          description: No company-scoped work order matches the external identity.
+          x-error-code: WORK_ORDER_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CmmsError'
+                  - type: object
+                    properties:
+                      code:
+                        const: WORK_ORDER_NOT_FOUND
+  /api/work-orders/{work_order_id}/change-status:
+    patch:
+      operationId: changePredictiveWorkOrderStatus
+      summary: Advance one confirmed predictive work order during pilot acceptance.
+      description: >-
+        The caller first freezes the complete work-order identity, current status, and
+        event_version from the external-ref lookup. A separately confirmed apply sends
+        this request at most once and never retries an unknown response.
+      x-write-semantics: at-most-once-no-retry
+      security:
+        - CmmsJwtBearer: []
+      parameters:
+        - name: work_order_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkOrderChangeStatusRequest'
+      responses:
+        '200':
+          description: Current state after exactly one accepted transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictiveWorkOrderResponse'
+        '400':
+          description: The body is malformed or the requested status is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CmmsError'
+        '404':
+          description: The authenticated company cannot access this work order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CmmsError'
+        '406':
+          description: The current CMMS state does not permit the requested transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CmmsError'
 components:
   securitySchemes:
     CmmsJwtBearer:
@@ -169,6 +311,155 @@ components:
           minLength: 1
         equipment_id:
           $ref: '#/components/schemas/CanonicalUuid'
+    WorkOrderAssetReference:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+    WorkOrderAssetResponse:
+      type: object
+      additionalProperties: true
+      required: [id]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+    LegacyWorkOrderCreateRequest:
+      type: object
+      additionalProperties: true
+      required: [title]
+      not:
+        anyOf:
+          - required: [external_source]
+          - required: [external_ref]
+          - required: [correlation_id]
+          - required: [equipment_id]
+          - required: [tb_alarm_id]
+          - required: [model_profile_id]
+          - required: [model_info_id]
+          - required: [policy_version]
+      properties:
+        title:
+          type: string
+          minLength: 1
+    PredictiveWorkOrderCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - title
+        - description
+        - priority
+        - asset
+        - external_source
+        - external_ref
+        - correlation_id
+        - equipment_id
+        - tb_alarm_id
+        - model_profile_id
+        - model_info_id
+        - policy_version
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        priority:
+          const: HIGH
+        asset:
+          $ref: '#/components/schemas/WorkOrderAssetReference'
+        external_source:
+          const: PDM_FORECAST
+        external_ref:
+          $ref: '#/components/schemas/CanonicalUuid'
+        correlation_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        equipment_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        tb_alarm_id:
+          $ref: '#/components/schemas/CanonicalUuid'
+        model_profile_id:
+          type: string
+          minLength: 1
+          maxLength: 160
+        model_info_id:
+          type: string
+          minLength: 1
+          maxLength: 160
+        policy_version:
+          type: string
+          minLength: 1
+          maxLength: 100
+    WorkOrderChangeStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [IN_PROGRESS, COMPLETE]
+    WorkOrderResponse:
+      type: object
+      additionalProperties: true
+      required: [id, title, status, asset]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          minLength: 1
+        updatedAt:
+          type: string
+          format: date-time
+        asset:
+          $ref: '#/components/schemas/WorkOrderAssetResponse'
+    PredictiveWorkOrderResponse:
+      allOf:
+        - $ref: '#/components/schemas/WorkOrderResponse'
+        - type: object
+          required:
+            - external_source
+            - external_ref
+            - correlation_id
+            - equipment_id
+            - tb_alarm_id
+            - model_profile_id
+            - model_info_id
+            - policy_version
+            - event_version
+          properties:
+            external_source:
+              const: PDM_FORECAST
+            external_ref:
+              $ref: '#/components/schemas/CanonicalUuid'
+            correlation_id:
+              $ref: '#/components/schemas/CanonicalUuid'
+            equipment_id:
+              $ref: '#/components/schemas/CanonicalUuid'
+            tb_alarm_id:
+              $ref: '#/components/schemas/CanonicalUuid'
+            model_profile_id:
+              type: string
+              minLength: 1
+            model_info_id:
+              type: string
+              minLength: 1
+            policy_version:
+              type: string
+              minLength: 1
+            event_version:
+              type: integer
+              minimum: 0
     CmmsError:
       type: object
       additionalProperties: false

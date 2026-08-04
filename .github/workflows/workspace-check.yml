@@ -36,11 +36,27 @@ jobs:
       - name: Validate workspace, Skills, and MCP configuration
         run: ./scripts/doctor.sh
 
-      - name: Test platform-integration skeleton
+      - name: Test platform-integration offline closed-loop boundaries
         run: >
           uv run --directory components/platform-integration --frozen
           pytest tests/test_app.py tests/test_cli.py tests/test_config.py
-          tests/test_container_hygiene.py -v
+          tests/commands/test_closed_loop.py
+          tests/clients/test_cmms_client.py
+          tests/clients/test_thingsboard_client.py
+          tests/services/test_closed_loop_acceptance.py
+          tests/services/test_closed_loop_delivery.py -v
+
+      - name: Validate platform-integration container hygiene statically
+        shell: bash
+        run: |
+          git -C components/platform-integration check-ignore --no-index \
+            .env.test-sentinel .pytest_cache/test-sentinel
+          grep -Fqx '.env*' components/platform-integration/.dockerignore
+          grep -Fqx '.pytest_cache/' components/platform-integration/.dockerignore
+          grep -Fqx 'USER 10001:10001' components/platform-integration/Dockerfile
+          grep -Fqx \
+            'CMD ["platform-integration", "serve", "--host", "0.0.0.0", "--port", "8080"]' \
+            components/platform-integration/Dockerfile
 
       - name: Test root workspace governance
         run: >
@@ -59,6 +75,17 @@ jobs:
           e2e/test_shadow_deployment_contract.py
           e2e/test_shadow_seed.py
           e2e/test_shadow_prediction.py
+          -m "not pilot_e2e" --strict-markers -v
+
+      - name: Validate closed-loop contracts and offline deployment controls
+        run: >
+          uv run --directory tests --frozen
+          pytest contract/closed_loop
+          e2e/test_closed_loop_deployment_contract.py
+          e2e/test_closed_loop_bootstrap.py
+          e2e/test_closed_loop_runtime_security.py
+          e2e/test_closed_loop_state_io.py
+          e2e/test_pilot_cmms_status.py
           -m "not pilot_e2e" --strict-markers -v
 
       - name: Smoke-test the MCP STDIO entry point

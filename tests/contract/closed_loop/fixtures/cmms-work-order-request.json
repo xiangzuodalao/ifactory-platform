@@ -1,0 +1,14 @@
+{
+  "title": "Predictive maintenance risk: LINE-A-CNC-01/vibration_rms",
+  "description": "Forecast crossed ABOVE 4.00 mm/s; correlation_id=00000000-0000-4000-8000-000000000501.",
+  "priority": "HIGH",
+  "asset": {"id": 101},
+  "external_source": "PDM_FORECAST",
+  "external_ref": "00000000-0000-4000-8000-000000000401",
+  "correlation_id": "00000000-0000-4000-8000-000000000501",
+  "equipment_id": "00000000-0000-4000-8000-000000000101",
+  "tb_alarm_id": "00000000-0000-4000-8000-000000000601",
+  "model_profile_id": "cnc-vibration-rms",
+  "model_info_id": "fixture-repeat-last-v1",
+  "policy_version": "pilot-v1"
+}

@@ -30,6 +30,10 @@ ifactory-platform/
 - `.agents/skills/`：Codex 可复用工作流；PDM 训练 Skill 位于总仓，场景接入 Skill 由 PDM 组件维护。
 - `.codex/config.toml`：仅在信任本仓库后加载的项目级 MCP 配置。
 
+隔离的预测性维护闭环试点由 `scripts/closed-loop-pilot.sh` 管理。它把 PDM 风险、
+ThingsBoard Alarm、一次 Dashboard 人工批准、CMMS 幂等工单和轮询状态回传串联起来；
+完整边界、确认门和恢复步骤见 `deploy/README.md`。
+
 ## 初始化
 
 ```bash

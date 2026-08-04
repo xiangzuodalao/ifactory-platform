@@ -1,0 +1,5 @@
+{
+  "action": "CREATE_WORK_ORDER",
+  "expected_version": 1,
+  "confirmed_plan_hash": "2222222222222222222222222222222222222222222222222222222222222222"
+}

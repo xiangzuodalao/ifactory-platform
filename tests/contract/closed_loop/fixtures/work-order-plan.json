@@ -1,0 +1,21 @@
+{
+  "alert_id": "00000000-0000-4000-8000-000000000401",
+  "equipment_id": "00000000-0000-4000-8000-000000000101",
+  "meas_code": "vibration_rms",
+  "risk_state": "ACTIVE",
+  "maintenance_state": "PENDING_APPROVAL",
+  "expected_version": 1,
+  "priority": "HIGH",
+  "forecast_summary": {
+    "minimum": "4.10",
+    "maximum": "4.40",
+    "mean": "4.25",
+    "crossing_count": 15
+  },
+  "threshold": {
+    "direction": "ABOVE",
+    "value": "4.00",
+    "unit": "mm/s"
+  },
+  "plan_hash": "2222222222222222222222222222222222222222222222222222222222222222"
+}

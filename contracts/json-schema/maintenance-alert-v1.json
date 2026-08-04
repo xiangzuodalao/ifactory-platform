@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ifactory.local/contracts/maintenance-alert-v1.json",
+  "title": "Maintenance Alert Projection",
+  "description": "Bounded ThingsBoard Alarm details produced by platform-integration; raw telemetry, forecast arrays and credentials are forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alert_id",
+    "risk_key",
+    "equipment_id",
+    "meas_code",
+    "prediction_run_id",
+    "model_profile_id",
+    "model_info_id",
+    "policy_version",
+    "forecast_summary",
+    "threshold",
+    "risk_state",
+    "maintenance_state",
+    "maintenance_alert_version",
+    "work_order_action_allowed",
+    "correlation_id"
+  ],
+  "properties": {
+    "alert_id": {"$ref": "#/$defs/uuid"},
+    "risk_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "equipment_id": {"$ref": "#/$defs/uuid"},
+    "meas_code": {"type": "string", "minLength": 1, "maxLength": 120},
+    "prediction_run_id": {"$ref": "#/$defs/uuid"},
+    "model_profile_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "model_info_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "policy_version": {"type": "string", "minLength": 1, "maxLength": 100},
+    "forecast_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum", "maximum", "mean", "crossing_count"],
+      "properties": {
+        "minimum": {"$ref": "#/$defs/decimal"},
+        "maximum": {"$ref": "#/$defs/decimal"},
+        "mean": {"$ref": "#/$defs/decimal"},
+        "crossing_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "threshold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "value", "unit"],
+      "properties": {
+        "direction": {"enum": ["ABOVE", "BELOW"]},
+        "value": {"$ref": "#/$defs/decimal"},
+        "unit": {"type": "string", "minLength": 1, "maxLength": 40}
+      }
+    },
+    "risk_state": {"enum": ["ACTIVE", "CLEARED", "MANUALLY_CLOSED"]},
+    "maintenance_state": {
+      "enum": [
+        "PENDING_APPROVAL",
+        "APPROVED",
+        "WORK_ORDER_CREATING",
+        "WORK_ORDER_OPEN",
+        "WORK_ORDER_IN_PROGRESS",
+        "WORK_ORDER_ON_HOLD",
+        "WORK_ORDER_COMPLETE",
+        "WORK_ORDER_CREATE_FAILED",
+        "SUPPRESSED_ACTIVE_WORK_ORDER"
+      ]
+    },
+    "maintenance_alert_version": {"type": "integer", "minimum": 1},
+    "work_order_action_allowed": {"type": "boolean"},
+    "cmms_work_order_id": {"type": ["integer", "null"], "minimum": 1},
+    "cmms_status": {"type": ["string", "null"], "enum": [null, "OPEN", "IN_PROGRESS", "ON_HOLD", "COMPLETE"]},
+    "cmms_event_version": {"type": ["integer", "null"], "minimum": 0},
+    "cmms_status_updated_at": {"type": ["string", "null"], "format": "date-time"},
+    "correlation_id": {"$ref": "#/$defs/uuid"}
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    }
+  }
+}

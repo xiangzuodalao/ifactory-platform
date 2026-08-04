@@ -1,0 +1,457 @@
+name: ifactory-closed-loop-pilot
+
+x-integration-environment: &integration-environment
+  PLATFORM_INTEGRATION_DATABASE_URL: postgresql+psycopg://${INTEGRATION_POSTGRES_USER:?required}:${INTEGRATION_POSTGRES_PASSWORD:?required}@integration-db:5432/${INTEGRATION_POSTGRES_DB:?required}
+  PLATFORM_INTEGRATION_TENANT_ALIAS: ${PLATFORM_INTEGRATION_TENANT_ALIAS:?required}
+  PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+  PLATFORM_INTEGRATION_ISOLATED_PILOT_MODE: "1"
+  PLATFORM_INTEGRATION_CLOSED_LOOP_ENABLED: "1"
+  PLATFORM_INTEGRATION_PDM_BASE_URL: http://pdm:10021
+  PLATFORM_INTEGRATION_TB_BASE_URL: http://tb-relay:8080
+  PLATFORM_INTEGRATION_CMMS_BASE_URL: http://cmms-gateway:8080
+  PLATFORM_INTEGRATION_TB_TENANT_ID: ${PLATFORM_INTEGRATION_TB_TENANT_ID:-}
+  PLATFORM_INTEGRATION_CMMS_COMPANY_ID: ${PLATFORM_INTEGRATION_CMMS_COMPANY_ID:-}
+  PLATFORM_INTEGRATION_PDM_CREDENTIAL_REF: PILOT_PDM_CREDENTIAL
+  PLATFORM_INTEGRATION_TB_CREDENTIAL_REF: PILOT_TB_CREDENTIAL
+  PLATFORM_INTEGRATION_CMMS_CREDENTIAL_REF: PILOT_CMMS_CREDENTIAL
+  PLATFORM_INTEGRATION_APPROVER_TB_USER_ID: ${PLATFORM_INTEGRATION_APPROVER_TB_USER_ID:-}
+  PLATFORM_INTEGRATION_PILOT_WORK_ORDER_EQUIPMENT_ID: ${PLATFORM_INTEGRATION_PILOT_WORK_ORDER_EQUIPMENT_ID:-}
+  PLATFORM_INTEGRATION_FEEDBACK_POLL_SECONDS: "30"
+
+x-integration-service: &integration-service
+  build:
+    context: ../../components/platform-integration
+  image: ifactory-platform-integration:closed-loop-pilot
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:mode=0700]
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: "1.0"
+
+services:
+  cmms-db:
+    image: postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
+    environment:
+      POSTGRES_DB: ${CMMS_POSTGRES_DB:?required}
+      POSTGRES_USER: ${CMMS_POSTGRES_USER:?required}
+      POSTGRES_PASSWORD_FILE: /run/secrets/cmms_postgres_password
+    secrets: [cmms_postgres_password]
+    volumes: [cmms-postgres-data:/var/lib/postgresql/data]
+    networks: [cmms]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: "1.0"
+
+  cmms-minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb
+    command: [server, /data]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+    secrets: [minio_root_user, minio_root_password]
+    volumes: [cmms-minio-data:/data]
+    networks: [cmms]
+    healthcheck:
+      test: [CMD, curl, -f, http://127.0.0.1:9000/minio/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: "0.75"
+
+  cmms-api:
+    build:
+      context: ../../components/cmms/api
+    image: ifactory-cmms-api:closed-loop-pilot
+    entrypoint: [/bin/sh, /opt/ifactory/start-cmms-pilot.sh]
+    environment:
+      DB_URL: cmms-db:5432/${CMMS_POSTGRES_DB:?required}
+      DB_USER: ${CMMS_POSTGRES_USER:?required}
+      PUBLIC_FRONT_URL: http://127.0.0.1:18081
+      PUBLIC_API_URL: http://cmms-gateway:8080/api
+      MAIL_RECIPIENTS: ""
+      STORAGE_TYPE: minio
+      MINIO_ENDPOINT: http://cmms-minio:9000
+      MINIO_BUCKET: ${CMMS_MINIO_BUCKET:-ifactory-pilot}
+      PUBLIC_MINIO_ENDPOINT: http://cmms-minio:9000
+      ENABLE_EMAIL_NOTIFICATIONS: "false"
+      ENABLE_MAIL_HEALTH_CHECK: "false"
+      DEMO_DATA_AUTO_CREATE_ENABLED: "false"
+      PADDLE_API_KEY: ""
+    secrets:
+      - cmms_postgres_password
+      - cmms_jwt_secret
+      - minio_root_user
+      - minio_root_password
+    volumes:
+      - ../compose/scripts/start-cmms-pilot.sh:/opt/ifactory/start-cmms-pilot.sh:ro
+    networks: [cmms]
+    depends_on:
+      cmms-db: {condition: service_healthy}
+      cmms-minio: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8080/actuator/health']
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 30
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:mode=0700]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: "2.0"
+
+  cmms-gateway:
+    image: nginx:1.27.0-alpine@sha256:a377278b7dde3a8012b25d141d025a88dbf9f5ed13c5cdf21ee241e7ec07ab57
+    command: [nginx, -g, daemon off;, -c, /etc/ifactory/nginx.conf]
+    volumes:
+      - ../gateway/closed-loop-cmms-nginx.conf:/etc/ifactory/nginx.conf:ro
+    networks: [cmms, providers]
+    depends_on:
+      cmms-api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://cmms-api:8080/actuator/health']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    user: "101:101"
+    pids_limit: 64
+    mem_limit: 128m
+
+  integration-db:
+    image: postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
+    environment:
+      POSTGRES_DB: ${INTEGRATION_POSTGRES_DB:?required}
+      POSTGRES_USER: ${INTEGRATION_POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${INTEGRATION_POSTGRES_PASSWORD:?required}
+    volumes: [integration-postgres-data:/var/lib/postgresql/data]
+    networks: [integration]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: "1.0"
+
+  pdm:
+    build:
+      context: ../../components/pdm-algorithm
+    image: ifactory-pdm:closed-loop-pilot
+    environment:
+      VALEO_PDM_ISOLATED_FIXTURE_MODE: "1"
+      VALEO_PDM_PREDICTION_V2_BEARER_TOKEN: ${VALEO_PDM_PREDICTION_V2_BEARER_TOKEN:-}
+      VALEO_PDM_ALLOWED_TENANT_IDS: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      VALEO_PDM_PREDICTION_V2_MANIFEST: /fixtures/manifest.runtime.yaml
+      VALEO_PDM_PREDICTION_V2_OBJECT_ROOT: /fixtures/objects
+    volumes: [../../.runtime/pdm-fixtures:/fixtures:ro]
+    networks: [providers]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10021/readyz').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:mode=0700]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: "2.0"
+
+  tb-relay-init:
+    image: nginx:1.27.0-alpine@sha256:a377278b7dde3a8012b25d141d025a88dbf9f5ed13c5cdf21ee241e7ec07ab57
+    network_mode: none
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - >-
+        chown 101:101 /relay;
+        chmod 0700 /relay
+    volumes: [tb-relay-sockets:/relay]
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 32m
+    restart: "no"
+
+  tb-host-relay:
+    image: nginx:1.27.0-alpine@sha256:a377278b7dde3a8012b25d141d025a88dbf9f5ed13c5cdf21ee241e7ec07ab57
+    network_mode: host
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - >-
+        rm -f /relay/backend.sock /relay/ui.sock;
+        exec nginx -g 'daemon off;' -c /etc/ifactory/nginx.conf
+    volumes:
+      - tb-relay-sockets:/relay
+      - ../gateway/closed-loop-tb-host-relay-nginx.conf:/etc/ifactory/nginx.conf:ro
+    depends_on:
+      tb-relay-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD-SHELL, 'test -S /relay/backend.sock && test -S /relay/ui.sock && wget -q -O /dev/null http://127.0.0.1:8080/ && wget -q -O /dev/null http://127.0.0.1:4200/']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    read_only: true
+    user: "101:101"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    pids_limit: 64
+    mem_limit: 128m
+
+  tb-relay:
+    image: nginx:1.27.0-alpine@sha256:a377278b7dde3a8012b25d141d025a88dbf9f5ed13c5cdf21ee241e7ec07ab57
+    command: [nginx, -g, daemon off;, -c, /etc/ifactory/nginx.conf]
+    volumes:
+      - tb-relay-sockets:/relay
+      - ../gateway/closed-loop-tb-relay-nginx.conf:/etc/ifactory/nginx.conf:ro
+    networks: [providers]
+    depends_on:
+      tb-host-relay: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8080/ && wget -q -O /dev/null http://127.0.0.1:4200/']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    read_only: true
+    user: "101:101"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    pids_limit: 64
+    mem_limit: 128m
+
+  integration-migrate:
+    <<: *integration-service
+    command: [platform-integration, migrate]
+    environment: *integration-environment
+    networks: [integration]
+    depends_on:
+      integration-db: {condition: service_healthy}
+
+  integration-api:
+    <<: *integration-service
+    environment: *integration-environment
+    networks: [integration, browser, providers]
+    depends_on:
+      integration-migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  scheduler:
+    <<: *integration-service
+    command: [platform-integration, scheduler]
+    profiles: [continuous]
+    environment: *integration-environment
+    networks: [integration]
+    depends_on:
+      integration-migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  prediction-worker:
+    <<: *integration-service
+    command: [platform-integration, prediction-worker]
+    profiles: [continuous]
+    environment:
+      <<: *integration-environment
+      PILOT_PDM_CREDENTIAL: ${PILOT_PDM_CREDENTIAL:-}
+      PILOT_TB_CREDENTIAL: ${PILOT_TB_CREDENTIAL:-}
+    networks: [integration, providers]
+    depends_on:
+      integration-migrate: {condition: service_completed_successfully}
+      pdm: {condition: service_healthy}
+    restart: unless-stopped
+
+  alarm-worker:
+    <<: *integration-service
+    command: [platform-integration, closed-loop-worker, --role, alarm, --owner, alarm-1]
+    profiles: [continuous]
+    environment:
+      <<: *integration-environment
+      PILOT_TB_CREDENTIAL: ${PILOT_TB_CREDENTIAL:-}
+    networks: [integration, providers]
+    depends_on:
+      integration-migrate: {condition: service_completed_successfully}
+      tb-relay: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, platform-integration, provider-readiness, --role, alarm]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  work-order-worker:
+    <<: *integration-service
+    command: [platform-integration, closed-loop-worker, --role, work-order, --owner, work-order-1]
+    profiles: [continuous]
+    environment:
+      <<: *integration-environment
+      PILOT_CMMS_CREDENTIAL: ${PILOT_CMMS_CREDENTIAL:-}
+    networks: [integration, providers]
+    depends_on:
+      integration-migrate: {condition: service_completed_successfully}
+      cmms-gateway: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, platform-integration, provider-readiness, --role, work-order]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  status-poll-worker:
+    <<: *integration-service
+    command: [platform-integration, closed-loop-worker, --role, status-poll, --owner, status-poll-1]
+    profiles: [continuous]
+    environment:
+      <<: *integration-environment
+      PILOT_CMMS_CREDENTIAL: ${PILOT_CMMS_CREDENTIAL:-}
+    networks: [integration, providers]
+    depends_on:
+      integration-migrate: {condition: service_completed_successfully}
+      cmms-gateway: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, platform-integration, provider-readiness, --role, status-poll]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  browser-gateway:
+    image: nginx:1.27.0-alpine@sha256:a377278b7dde3a8012b25d141d025a88dbf9f5ed13c5cdf21ee241e7ec07ab57
+    command: [nginx, -g, daemon off;, -c, /etc/ifactory/nginx.conf]
+    ports: [127.0.0.1:18081:8080]
+    volumes:
+      - ../gateway/closed-loop-browser-nginx.conf:/etc/ifactory/nginx.conf:ro
+    networks: [browser, providers]
+    depends_on:
+      integration-api: {condition: service_healthy}
+      tb-relay: {condition: service_healthy}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    user: "101:101"
+    pids_limit: 64
+    mem_limit: 128m
+
+  bootstrap-runner:
+    <<: *integration-service
+    user: ${PILOT_HOST_UID:?required}:${PILOT_HOST_GID:?required}
+    profiles: [bootstrap]
+    command: [python, /pilot/pilot_bootstrap.py, --help]
+    environment:
+      PILOT_TB_CREDENTIAL: ${PILOT_TB_CREDENTIAL:-}
+      PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      CMMS_PILOT_ADMIN_EMAIL: ${CMMS_PILOT_ADMIN_EMAIL:-}
+      PILOT_RUNTIME_ROOT: /runtime
+      PILOT_ENV_FILE: /runtime/closed-loop-generated.env
+      PILOT_STATE_LOCK_FILE: /tmp/pilot-state.lock
+      PLATFORM_INTEGRATION_TB_BASE_URL: http://tb-relay:8080
+      CMMS_BOOTSTRAP_BASE_URL: http://cmms-api:8080
+    secrets: [cmms_admin_password]
+    volumes:
+      - ./scripts:/pilot:ro
+      - ${PILOT_STATE_DIR:?required}:/runtime
+      - ${PILOT_STATE_LOCK_FILE:?required}:/tmp/pilot-state.lock:ro
+    tmpfs:
+      - /tmp:uid=${PILOT_HOST_UID:?required},gid=${PILOT_HOST_GID:?required},mode=0700
+    networks: [cmms, providers]
+    depends_on:
+      cmms-api: {condition: service_healthy}
+      tb-relay: {condition: service_healthy}
+
+  provision-runner:
+    <<: *integration-service
+    user: ${PILOT_HOST_UID:?required}:${PILOT_HOST_GID:?required}
+    profiles: [acceptance]
+    command: [platform-integration, provision-verify, --help]
+    environment:
+      <<: *integration-environment
+      PILOT_TB_CREDENTIAL: ${PILOT_TB_CREDENTIAL:-}
+      PILOT_CMMS_CREDENTIAL: ${PILOT_CMMS_CREDENTIAL:-}
+      PILOT_RUNTIME_ROOT: /runtime
+      PILOT_ENV_FILE: /runtime/closed-loop-generated.env
+      PILOT_STATE_LOCK_FILE: /tmp/pilot-state.lock
+    volumes:
+      - ./scripts:/pilot:ro
+      - ${PILOT_STATE_DIR:?required}:/runtime
+      - ${PILOT_STATE_LOCK_FILE:?required}:/tmp/pilot-state.lock:ro
+    tmpfs:
+      - /tmp:uid=${PILOT_HOST_UID:?required},gid=${PILOT_HOST_GID:?required},mode=0700
+    networks: [integration, providers]
+    depends_on:
+      integration-migrate: {condition: service_completed_successfully}
+      cmms-gateway: {condition: service_healthy}
+      tb-relay: {condition: service_healthy}
+
+  status-runner:
+    <<: *integration-service
+    user: ${PILOT_HOST_UID:?required}:${PILOT_HOST_GID:?required}
+    profiles: [acceptance]
+    command: [python, /pilot/pilot_cmms_status.py, --help]
+    environment:
+      PLATFORM_INTEGRATION_TENANT_ID: ${PLATFORM_INTEGRATION_TENANT_ID:?required}
+      PLATFORM_INTEGRATION_CMMS_BASE_URL: http://cmms-gateway:8080
+      PLATFORM_INTEGRATION_CMMS_COMPANY_ID: ${PLATFORM_INTEGRATION_CMMS_COMPANY_ID:-}
+      PILOT_CMMS_CREDENTIAL: ${PILOT_CMMS_CREDENTIAL:-}
+      PILOT_RUNTIME_ROOT: /runtime
+      PILOT_STATE_LOCK_FILE: /tmp/pilot-state.lock
+    volumes:
+      - ./scripts:/pilot:ro
+      - ${PILOT_STATE_DIR:?required}/receipts:/runtime/receipts
+      - ${PILOT_STATE_LOCK_FILE:?required}:/tmp/pilot-state.lock:ro
+    tmpfs:
+      - /tmp:uid=${PILOT_HOST_UID:?required},gid=${PILOT_HOST_GID:?required},mode=0700
+      - /runtime:uid=${PILOT_HOST_UID:?required},gid=${PILOT_HOST_GID:?required},mode=0700
+    networks: [providers]
+    depends_on:
+      cmms-gateway: {condition: service_healthy}
+
+secrets:
+  cmms_postgres_password:
+    file: ${CMMS_POSTGRES_PASSWORD_FILE:?required}
+  cmms_jwt_secret:
+    file: ${CMMS_JWT_SECRET_FILE:?required}
+  cmms_admin_password:
+    file: ${CMMS_ADMIN_PASSWORD_FILE:?required}
+  minio_root_user:
+    file: ${MINIO_ROOT_USER_FILE:?required}
+  minio_root_password:
+    file: ${MINIO_ROOT_PASSWORD_FILE:?required}
+
+networks:
+  cmms: {internal: true}
+  integration: {internal: true}
+  browser: {internal: true}
+  providers: {}
+
+volumes:
+  cmms-postgres-data: {}
+  cmms-minio-data: {}
+  integration-postgres-data: {}
+  tb-relay-sockets: {}

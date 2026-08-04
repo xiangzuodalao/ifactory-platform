@@ -1,0 +1,30 @@
+{
+  "alert_id": "00000000-0000-4000-8000-000000000401",
+  "risk_key": "1111111111111111111111111111111111111111111111111111111111111111",
+  "equipment_id": "00000000-0000-4000-8000-000000000101",
+  "meas_code": "vibration_rms",
+  "prediction_run_id": "00000000-0000-4000-8000-000000000301",
+  "model_profile_id": "cnc-vibration-rms",
+  "model_info_id": "fixture-repeat-last-v1",
+  "policy_version": "pilot-v1",
+  "forecast_summary": {
+    "minimum": "4.10",
+    "maximum": "4.40",
+    "mean": "4.25",
+    "crossing_count": 15
+  },
+  "threshold": {
+    "direction": "ABOVE",
+    "value": "4.00",
+    "unit": "mm/s"
+  },
+  "risk_state": "ACTIVE",
+  "maintenance_state": "PENDING_APPROVAL",
+  "maintenance_alert_version": 1,
+  "work_order_action_allowed": true,
+  "cmms_work_order_id": null,
+  "cmms_status": null,
+  "cmms_event_version": null,
+  "cmms_status_updated_at": null,
+  "correlation_id": "00000000-0000-4000-8000-000000000501"
+}
