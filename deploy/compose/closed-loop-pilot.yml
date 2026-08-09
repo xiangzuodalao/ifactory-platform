@@ -98,7 +98,7 @@ services:
       cmms-db: {condition: service_healthy}
       cmms-minio: {condition: service_healthy}
     healthcheck:
-      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8080/actuator/health']
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8080/health-check']
       interval: 10s
       timeout: 5s
       start_period: 60s
@@ -106,7 +106,8 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:mode=0700]
+    tmpfs: ["/tmp:uid=${PILOT_HOST_UID:?required},gid=${PILOT_HOST_GID:?required},mode=0700"]
+    user: ${PILOT_HOST_UID:?required}:${PILOT_HOST_GID:?required}
     pids_limit: 256
     mem_limit: 2g
     cpus: "2.0"
@@ -120,14 +121,14 @@ services:
     depends_on:
       cmms-api: {condition: service_healthy}
     healthcheck:
-      test: [CMD-SHELL, 'wget -q -O /dev/null http://cmms-api:8080/actuator/health']
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://cmms-api:8080/health-check']
       interval: 10s
       timeout: 5s
       retries: 12
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    tmpfs: ["/tmp:uid=101,gid=101,mode=0700"]
     user: "101:101"
     pids_limit: 64
     mem_limit: 128m
@@ -214,7 +215,7 @@ services:
     user: "101:101"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    tmpfs: ["/tmp:uid=101,gid=101,mode=0700"]
     pids_limit: 64
     mem_limit: 128m
 
@@ -236,7 +237,7 @@ services:
     user: "101:101"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    tmpfs: ["/tmp:uid=101,gid=101,mode=0700"]
     pids_limit: 64
     mem_limit: 128m
 
@@ -354,7 +355,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:uid=101,gid=101,mode=0700]
+    tmpfs: ["/tmp:uid=101,gid=101,mode=0700"]
     user: "101:101"
     pids_limit: 64
     mem_limit: 128m

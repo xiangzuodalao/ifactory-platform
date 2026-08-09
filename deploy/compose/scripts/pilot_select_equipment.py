@@ -157,12 +157,16 @@ def _select_locked(plan_hash: str) -> dict[str, object]:
             status != 200
             or type(page) is not dict
             or page.get("hasNext") is not False
-            or page.get("totalElements") != 20
             or type(page.get("data")) is not list
+            or page.get("totalElements") != len(page["data"])
         ):
             raise BootstrapError("PILOT_DEVICE_SET_INVALID")
-        matches = [device for device in page["data"] if device.get("name") == DEVICE_NAME]
-        if len(matches) != 1:
+        matches = [
+            device
+            for device in page["data"]
+            if type(device) is dict and device.get("name") == DEVICE_NAME
+        ]
+        if len(matches) != 1 or matches[0].get("type") != "CNC":
             raise BootstrapError("PILOT_WORK_ORDER_DEVICE_INVALID")
         try:
             tb_device_id = _canonical_uuid(matches[0]["id"]["id"], "TB_DEVICE_ID_INVALID")

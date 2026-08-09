@@ -23,9 +23,23 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
+        id: setup-uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: false
+
+      - name: Expose uv at the wrapper fallback path
+        shell: bash
+        env:
+          UV_SOURCE: ${{ steps.setup-uv.outputs.uv-path }}
+        run: |
+          runner_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+          test -n "${runner_home}"
+          test -x "${UV_SOURCE}"
+          case "${UV_SOURCE}" in /*) ;; *) exit 1 ;; esac
+          install -d -m 0755 "${runner_home}/.local/bin"
+          test ! -e "${runner_home}/.local/bin/uv"
+          ln -s "${UV_SOURCE}" "${runner_home}/.local/bin/uv"
 
       - name: Validate script modes
         run: test -x scripts/bootstrap.sh -a -x scripts/doctor.sh -a -x scripts/run-digital-mcp.sh
@@ -86,6 +100,16 @@ jobs:
           e2e/test_closed_loop_runtime_security.py
           e2e/test_closed_loop_state_io.py
           e2e/test_pilot_cmms_status.py
+          -m "not pilot_e2e" --strict-markers -v
+
+      - name: Validate CMMS development deployment controls
+        run: >
+          uv run --directory tests --frozen
+          pytest e2e/test_cmms_deployment_contract.py
+          e2e/test_cmms_deployment_records.py
+          e2e/test_cmms_nginx_contract.py
+          e2e/test_cmms_secure_artifacts.py
+          e2e/test_cmms_toolchains_and_source.py
           -m "not pilot_e2e" --strict-markers -v
 
       - name: Smoke-test the MCP STDIO entry point

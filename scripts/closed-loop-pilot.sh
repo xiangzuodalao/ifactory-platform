@@ -95,7 +95,7 @@ case "${1:-}" in
     test -n "${2:-}" || { usage >&2; exit 64; }
     preflight provision
     select_docker
-    compose up -d integration-db
+    compose up -d --wait --wait-timeout 300 integration-db cmms-gateway tb-relay
     compose run --rm integration-migrate
     compose --profile acceptance run --rm --no-deps provision-runner \
       platform-integration provision-plan \
@@ -105,6 +105,7 @@ case "${1:-}" in
     test -n "${2:-}" && test -n "${3:-}" || { usage >&2; exit 64; }
     preflight provision
     select_docker
+    compose up -d --wait --wait-timeout 300 integration-db cmms-gateway tb-relay
     compose --profile acceptance run --rm --no-deps provision-runner \
       platform-integration provision-apply \
       --tenant-alias ifactory-pilot --plan-hash "$2" \

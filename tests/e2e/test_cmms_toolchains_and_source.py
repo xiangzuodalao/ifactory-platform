@@ -131,8 +131,8 @@ EXPECTED_TOOLS = {
 }
 
 EXPECTED_SENSITIVE_MANIFEST_SHA256 = (
-    "76f2c7686983610ad35c75508e656459"
-    "2b69f3000190291e558dce253c9128d8"
+    "ce9accd96699afa427ccafccc774c595"
+    "e8ddc5d239d42f147c873b43bb4140e5"
 )
 EXPECTED_SENSITIVE_FILES = {
     "api/Dockerfile": "5050d82e0f4ac79c2fd121b411017d315afa15ebdfe3ad14bff659293cc54146",
@@ -147,7 +147,7 @@ EXPECTED_SENSITIVE_FILES = {
     "api/src/main/java/com/grash/controller/LicenseController.java": "8bd6e0c661615f8d4af41fc6225b9757a69b6ae88f09b7ce2abead004f559eab",
     "api/src/main/java/com/grash/controller/RoleController.java": "b8e04e05a507a5a342e631e48de3d9c3debb27a5738f2407acd41b8707939080",
     "api/src/main/java/com/grash/controller/UserController.java": "e08202378a5d9b5df6f7f33c081844bd2472c9338e3cfa8d2c53fc7f27869716",
-    "api/src/main/java/com/grash/controller/WorkOrderController.java": "c2dba0f35f89922552d5fd427e9eeafb3923dab7ddcdd30b0388e864d50473cf",
+    "api/src/main/java/com/grash/controller/WorkOrderController.java": "9bec78ca28c19adbd133828fd7abb499ba6d06d6fa71de6a36814ee3ec998372",
     "api/src/main/java/com/grash/dto/CompanyShowDTO.java": "af733cf19c5c8e319a244b4d2e6ce6dac434713854d987b5797c6f2f36c4110e",
     "api/src/main/java/com/grash/dto/RolePatchDTO.java": "04a367d6d4b6222f164f898444a8fe264186bd5b24909b254d6b96a9c6a440d9",
     "api/src/main/java/com/grash/dto/UpdatePasswordRequest.java": "a8dec36ff6573a86a93926b96feba89630f3c2e10837e327dfe694b9bf78070e",
@@ -157,19 +157,26 @@ EXPECTED_SENSITIVE_FILES = {
     "api/src/main/java/com/grash/dto/apiKey/ApiKeyPostDTO.java": "ba2b686409c323452076a59d31f22c0ac5308182e08c3f8ee52450c6ca0d6ad0",
     "api/src/main/java/com/grash/dto/apiKey/ApiKeyShowDTO.java": "c08052f66e34cc68fbda2ef1aa7f8067bf6a4866d41b3ef919bda4bd3e2cd213",
     "api/src/main/java/com/grash/dto/license/LicensingState.java": "08c4c0ae5654aeff8c93fe4e179a3c0b1d424334f7be7c216f0d1666a7ea699e",
+    "api/src/main/java/com/grash/dto/workOrder/WorkOrderPostDTO.java": "8ceedd0868a685285439fa0eda81b43b8c02530c80810075030ce461d033afb1",
+    "api/src/main/java/com/grash/dto/workOrder/WorkOrderShowDTO.java": "325b80b00063253af7285b55e5eadf30405418ebc0d0299416c713296f77e44f",
     "api/src/main/java/com/grash/mapper/ApiKeyMapper.java": "630cd292f808ce3a2d438c2e907ec29ec23514401b27641daca6005e8be4681d",
+    "api/src/main/java/com/grash/mapper/WorkOrderMapper.java": "643d791a886c1e31b1ae8a55ad139fb43c93d38e27e92f0e72a3116e42232120",
     "api/src/main/java/com/grash/model/Role.java": "31b3f8c657bb262eb17b3e62f436a3ede84887ff244dccae5fc9fd1daea59d3a",
+    "api/src/main/java/com/grash/model/WorkOrder.java": "c5288e1965f7132233002306fbb71766da45695c1d63ebad69795c2901d45274",
     "api/src/main/java/com/grash/model/enums/PermissionEntity.java": "17ac2e499dac9f79e9016d30e08dc2a733dedb5442500b8bed6841a11d781377",
     "api/src/main/java/com/grash/repository/UserInvitationRepository.java": "be52c0e0c30e84c3dea7e1d01265ccee6c4c0e25c402ef257f79240d0440d59d",
+    "api/src/main/java/com/grash/repository/WorkOrderRepository.java": "b1a1eefc99f3f8ac441e015ea7130266b553cfa8b760af8d3357dbe0cc987463",
     "api/src/main/java/com/grash/security/ApiKeyAuthFilter.java": "ecad771d33deb5e2151984300eb66078445c249d35329faf9df4e5507389e9f7",
     "api/src/main/java/com/grash/service/ApiKeyService.java": "1f2209c72aaa90ea0530c3f31cb72779e8471d4a662d14b865d5e2db98a6aa04",
     "api/src/main/java/com/grash/service/AssetIntegrationService.java": "72cc60854dc7ff30e279dd687f2a652cd45605bbc86270c83318ebdd58c2df02",
+    "api/src/main/java/com/grash/service/DemoDataService.java": "6ec9d61840edd929237f9cf604c71356ba4fcc8cbf0678a712406147d6b647ed",
     "api/src/main/java/com/grash/service/IntercomService.java": "9e564aff418a77e96104ea4c70cbefe80fa5c3230479aa4823afd90910558abf",
     "api/src/main/java/com/grash/service/LicenseService.java": "e3c4df47ed6439128b1caa6e29a33cbbb1c29a8e878bca736df1be1023d42c07",
     "api/src/main/java/com/grash/service/MinioService.java": "9753a44ccb36be08c8a6fc2170794fd3090f030cbd4a584f4e6bbbe395f59b07",
     "api/src/main/java/com/grash/service/RoleService.java": "2d81452647053d42bc9b8a2e22f3d77c815ce37f52e236897887172c6bcdef2d",
     "api/src/main/java/com/grash/service/UserService.java": "431b89ad6fbb035f93409abbc313150da30d27836db823c9685945ed5db697a6",
-    "api/src/main/resources/application.yml": "8b71fac66625d3c43b23edacd944e398eba7c59dde022d6dd56ef35c577181ea",
+    "api/src/main/java/com/grash/service/WorkOrderIntegrationService.java": "51fddb4bb307d754d1ec5762ce7ec1c0dec424e01dbc8249889cd741938e5745",
+    "api/src/main/resources/application.yml": "f052826d412400f43e7db04a90ef65c6f2d32f8fdf5f5cabc494909fb54a0bbb",
     "frontend/Dockerfile": "68f67c990a6dccfbb9ee77325d68d20b6f0aa9954fc6e7c65a27d3d868b2abe1",
     "frontend/package-lock.json": "484fdb709b700a50daaaf252f48cc9e11fb096401b52c8f4ef6d47de9100d46b",
     "frontend/package.json": "b52191055ea0ef64c0dae83ad50fc6923d32202678bd314e7dc6b38db4f1f669",
@@ -2078,13 +2085,13 @@ def test_sensitive_manifest_pins_the_reviewed_cmms_source() -> None:
         EXPECTED_SENSITIVE_MANIFEST_SHA256
     )
     assert manifest.sha256 == EXPECTED_SENSITIVE_MANIFEST_SHA256
-    assert manifest.cmms_gitlink == "f3cab0aaf3418638e76dc33dfa5f8b30ded2b7f0"
+    assert manifest.cmms_gitlink == "fbfb4e840442caec97ae48bb37f059f666b8aea7"
     assert {row.path: row.sha256 for row in manifest.files} == EXPECTED_SENSITIVE_FILES
     assert tuple(row.path for row in manifest.files) == tuple(EXPECTED_SENSITIVE_FILES)
     assert manifest.migration_tree.path == "api/src/main/resources/db"
     assert manifest.migration_tree.sha256 == (
-        "9f76c157b2d1953d89c32494f8a173ec"
-        "7acc40b038d66decdbc16ba0d714a331"
+        "b1409e4119de782ab86a85be88efd585"
+        "382f52dbb3070d6974857489f327a6f6"
     )
 
 
@@ -2095,8 +2102,8 @@ def test_reviewed_sensitive_baseline_matches_current_cmms_component() -> None:
     )
     assert result.ok is True
     assert result.code == "SENSITIVE_BASELINE_MATCHED"
-    assert result.sensitive_file_count == 39
-    assert result.migration_file_count == 116
+    assert result.sensitive_file_count == 46
+    assert result.migration_file_count == 117
 
 
 def _sensitive_fixture_manifest(

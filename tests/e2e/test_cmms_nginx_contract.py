@@ -59,12 +59,12 @@ PLATFORM_CLIENT = (
     / "components/platform-integration/src/platform_integration/clients/cmms.py"
 )
 CMMS_OPENAPI_CONTRACT = ROOT / "contracts/openapi/cmms-integration-v1.yaml"
-EXPECTED_GITLINK = "b7ca04bf56e5e98493128f59619832c817baac1e"
+EXPECTED_GITLINK = "83ebfd1460313eba414ffa30d9b6bd4983194f05"
 EXPECTED_CLIENT_SHA256 = (
-    "ed2306132a6538e07810e966872e15d1f3cb00dbf093f479e3b7d6a6e3edefa5"
+    "11ae82ce14b895de35cf8caf8a52d7b27ff4ea00ae41960822f0b392aed0f85d"
 )
 EXPECTED_CONTRACT_SHA256 = (
-    "ff3166e9d217d3ae072d59b5b167500a9b8e3285d5db8fac94b0551b8c56e33b"
+    "c3d403630f64770facca412b29edd0bebc85451de7444a40fd6dca7f8af73dc9"
 )
 EQUIPMENT_UUID_PATTERN = (
     r"^/api/assets/by-equipment-id/[0-9a-f]{8}-[0-9a-f]{4}-"
