@@ -59,7 +59,7 @@ PLATFORM_CLIENT = (
     / "components/platform-integration/src/platform_integration/clients/cmms.py"
 )
 CMMS_OPENAPI_CONTRACT = ROOT / "contracts/openapi/cmms-integration-v1.yaml"
-EXPECTED_GITLINK = "025d72a0928514ab73495b034ffa83c22627dc49"
+EXPECTED_GITLINK = "83ebfd1460313eba414ffa30d9b6bd4983194f05"
 EXPECTED_CLIENT_SHA256 = (
     "11ae82ce14b895de35cf8caf8a52d7b27ff4ea00ae41960822f0b392aed0f85d"
 )

@@ -3,7 +3,7 @@
   "bindings": {
     "cmms_openapi_contract_sha256": "c3d403630f64770facca412b29edd0bebc85451de7444a40fd6dca7f8af73dc9",
     "platform_integration_client_sha256": "11ae82ce14b895de35cf8caf8a52d7b27ff4ea00ae41960822f0b392aed0f85d",
-    "platform_integration_gitlink": "025d72a0928514ab73495b034ffa83c22627dc49"
+    "platform_integration_gitlink": "83ebfd1460313eba414ffa30d9b6bd4983194f05"
   },
   "routes": [
     {

@@ -46,8 +46,8 @@ _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _MANIFEST_MAX_BYTES = 256 * 1024
 _REVIEWED_SENSITIVE_MANIFEST_SHA256 = (
-    "04e09bc701da35b361f41d73c8815d9"
-    "771bd1f54aeae11b2fbd226c441b9458c"
+    "ce9accd96699afa427ccafccc774c595"
+    "e8ddc5d239d42f147c873b43bb4140e5"
 )
 _SENSITIVE_MANIFEST_MINT_TOKEN = object()
 

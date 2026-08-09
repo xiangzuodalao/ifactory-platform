@@ -131,8 +131,8 @@ EXPECTED_TOOLS = {
 }
 
 EXPECTED_SENSITIVE_MANIFEST_SHA256 = (
-    "04e09bc701da35b361f41d73c8815d9"
-    "771bd1f54aeae11b2fbd226c441b9458c"
+    "ce9accd96699afa427ccafccc774c595"
+    "e8ddc5d239d42f147c873b43bb4140e5"
 )
 EXPECTED_SENSITIVE_FILES = {
     "api/Dockerfile": "5050d82e0f4ac79c2fd121b411017d315afa15ebdfe3ad14bff659293cc54146",
@@ -2085,7 +2085,7 @@ def test_sensitive_manifest_pins_the_reviewed_cmms_source() -> None:
         EXPECTED_SENSITIVE_MANIFEST_SHA256
     )
     assert manifest.sha256 == EXPECTED_SENSITIVE_MANIFEST_SHA256
-    assert manifest.cmms_gitlink == "0662538e1feda84ba6288d99ecae02056b29d5d8"
+    assert manifest.cmms_gitlink == "fbfb4e840442caec97ae48bb37f059f666b8aea7"
     assert {row.path: row.sha256 for row in manifest.files} == EXPECTED_SENSITIVE_FILES
     assert tuple(row.path for row in manifest.files) == tuple(EXPECTED_SENSITIVE_FILES)
     assert manifest.migration_tree.path == "api/src/main/resources/db"
