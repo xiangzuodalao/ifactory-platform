@@ -1,9 +1,9 @@
 {
   "asset_create_idempotency_key_pattern": "^pilot-asset:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
   "bindings": {
-    "cmms_openapi_contract_sha256": "ff3166e9d217d3ae072d59b5b167500a9b8e3285d5db8fac94b0551b8c56e33b",
-    "platform_integration_client_sha256": "ed2306132a6538e07810e966872e15d1f3cb00dbf093f479e3b7d6a6e3edefa5",
-    "platform_integration_gitlink": "b7ca04bf56e5e98493128f59619832c817baac1e"
+    "cmms_openapi_contract_sha256": "c3d403630f64770facca412b29edd0bebc85451de7444a40fd6dca7f8af73dc9",
+    "platform_integration_client_sha256": "11ae82ce14b895de35cf8caf8a52d7b27ff4ea00ae41960822f0b392aed0f85d",
+    "platform_integration_gitlink": "025d72a0928514ab73495b034ffa83c22627dc49"
   },
   "routes": [
     {

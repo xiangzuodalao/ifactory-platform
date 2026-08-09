@@ -88,6 +88,16 @@ jobs:
           e2e/test_pilot_cmms_status.py
           -m "not pilot_e2e" --strict-markers -v
 
+      - name: Validate CMMS development deployment controls
+        run: >
+          uv run --directory tests --frozen
+          pytest e2e/test_cmms_deployment_contract.py
+          e2e/test_cmms_deployment_records.py
+          e2e/test_cmms_nginx_contract.py
+          e2e/test_cmms_secure_artifacts.py
+          e2e/test_cmms_toolchains_and_source.py
+          -m "not pilot_e2e" --strict-markers -v
+
       - name: Smoke-test the MCP STDIO entry point
         run: ./scripts/run-digital-mcp.sh </dev/null
 
