@@ -11,5 +11,5 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH
 fi
 
-exec uv run --project deploy/cmms --frozen --no-dev \
+exec uv run --quiet --project deploy/cmms --frozen --no-dev \
   cmms-development "$@"
